@@ -56,7 +56,7 @@ function render() {
     : 'The microphone stays off until your child punches in.';
   $('#punch-in').hidden = Boolean(state.currentSession);
   $('#punch-out').hidden = !state.currentSession;
-  $('#practice-button').textContent = state.currentSession ? 'Session in progress' : `Practice with ${c.name}`;
+  $('#punch-out').disabled = !state.currentSession;
   $('#session-detail').hidden = !state.currentSession;
   $('#reward-progress').innerHTML = state.rewards.filter((r) => r.enabled).map((r) => {
     const pending = state.redemptions.filter((x) => x.childId === c.id && x.status === 'pending').reduce((n,x)=>n+x.cost,0);
@@ -234,7 +234,13 @@ function bindEvents() {
   $('#punch-in').addEventListener('click', beginPractice);
   $('#punch-out').addEventListener('click', finishPractice);
   $('#retry-audio').addEventListener('click', startAudio);
-  $('#parent-toggle').addEventListener('click', () => { state.parentMode = !state.parentMode; persist(); });
+  $('#parent-toggle').addEventListener('click', () => {
+    state.parentMode = !state.parentMode;
+    $('#parent-toggle').setAttribute('aria-expanded', String(state.parentMode));
+    persist();
+    if (state.parentMode) requestAnimationFrame(() => $('#parent-dashboard').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    else window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
   $('#rename-child').addEventListener('click', () => {
     const next = prompt('Child display name', child().name)?.trim(); if (next) { child().name = next; persist(); }
   });
