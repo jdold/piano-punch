@@ -6,11 +6,11 @@ Private, mobile-first piano practice tracker for a family. The project is an ear
 
 | Area | Now | Before relying on it |
 | --- | --- | --- |
-| Practice data | Stored in this browser's `localStorage` | Connect authenticated Worker APIs to D1 |
+| Practice data | Synced to D1, with local recovery copy | Validate multi-device use with the family |
 | Audio | Processed on-device; parent may opt in to private session recordings stored in R2 | Validate the classifier with the family's pianos and ordinary household audio |
 | Points | Deterministic local ledger prototype | Move awards and redemptions to transactional server logic |
-| Access | Cloudflare Access gates the preview for the parent's account | Add authenticated API roles before relying on any shared family data |
-| Cloudflare | Worker preview and D1 schema are provisioned; app state is still local to each browser | Recording data is separately stored in a private R2 bucket |
+| Access | Cloudflare Access gates the preview and parent API routes | Keep the Access policy restricted to the parent |
+| Cloudflare | Worker, D1 state sync, and private R2 recording storage are deployed | Test real-device recording and retention |
 
 The audio classifier is an experimental signal-feature heuristic. It can mistake recorded piano, other pitched instruments, or some background audio for live piano. See [Testing](docs/TESTING.md) before trusting credited time or rewards.
 
@@ -29,7 +29,7 @@ npm run build
 
 `npm run dev:worker` builds the static UI into a local Worker preview. `npm run deploy` builds and deploys the Worker; it requires Wrangler authentication for the Cloudflare account. The deployed preview is restricted by Cloudflare Access to the parent email above. Keep Access enabled and previews disabled.
 
-Microphone access requires a secure browser context (localhost is supported). The UI stores state locally; clearing browser storage clears the prototype's data.
+Microphone access requires a secure browser context (localhost is supported). Parent controls can enable recording separately for each child; recordings upload after punch-out and are playable or deletable in the session audit timeline. Clearing browser storage does not delete data already synced to D1 or R2.
 
 ## Project map
 
