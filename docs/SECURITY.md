@@ -2,7 +2,7 @@
 
 ## Current limits
 
-The current app has no sign-in, server-side authorization, or cloud sync. Browser storage is accessible to anyone using that browser profile. Do not put real family records in a shared device profile or treat the current prototype as private multi-user storage.
+The hosted preview is gated by Cloudflare Access for the parent account. The app itself still has no server-side roles or cloud sync. Browser storage is accessible to anyone using that browser profile. Do not put authoritative family records in a shared device profile or treat this prototype as private multi-user storage.
 
 ## Data handling
 
@@ -14,7 +14,7 @@ The current app has no sign-in, server-side authorization, or cloud sync. Browse
 
 ## Required before family deployment
 
-- Protect the hostname with Cloudflare Access.
+- Keep the preview hostname protected by Cloudflare Access; it currently allows only the parent's configured identity.
 - Validate the authenticated identity and role on every Worker write. Hiding parent controls in the UI is not authorization.
 - Use parameterized D1 statements and transactional/idempotent operations for ledger and redemption changes.
 - Keep audit events for parent corrections, awards, adjustments, approvals, and rejections.

@@ -1,6 +1,6 @@
 # Piano Punch
 
-Private, mobile-first piano practice tracker for a family. The project is an early prototype: it has a live microphone timer, a piano-likeness heuristic, practice history, and a points/rewards interface. It is **not ready for family use or public deployment** yet.
+Private, mobile-first piano practice tracker for a family. The project is an early prototype: it has a live microphone timer, a piano-likeness heuristic, practice history, and a points/rewards interface. A gated Cloudflare preview is available at https://piano-punch.jakedold07.workers.dev.
 
 ## Current status
 
@@ -9,14 +9,16 @@ Private, mobile-first piano practice tracker for a family. The project is an ear
 | Practice data | Stored in this browser's `localStorage` | Connect authenticated Worker APIs to D1 |
 | Audio | Processed on-device; no recording is saved | Validate the classifier with the family's pianos and ordinary household audio |
 | Points | Deterministic local ledger prototype | Move awards and redemptions to transactional server logic |
-| Access | No login or role enforcement | Put behind Cloudflare Access and enforce parent actions server-side |
-| Cloudflare | D1 database and schema are provisioned; Worker is not deployed | Complete API, access controls, and deployment checks |
+| Access | Cloudflare Access gates the preview for the parent's account | Add authenticated API roles before relying on any shared family data |
+| Cloudflare | Worker preview and D1 schema are provisioned; app state is still local to each browser | Connect authenticated API routes to D1 before using across devices |
 
 The audio classifier is an experimental signal-feature heuristic. It can mistake recorded piano, other pitched instruments, or some background audio for live piano. See [Testing](docs/TESTING.md) before trusting credited time or rewards.
 
+The preview currently saves data only in the browser that created it. D1 is provisioned but not connected to the app yet; this preview is for evaluation, not authoritative family records.
+
 ## Run and verify
 
-Requirements: Node.js 22 and npm.
+Requirements: Node.js 22 and npm. The [private preview](https://piano-punch.jakedold07.workers.dev) is gated by Cloudflare Access for the parent account.
 
 ```sh
 npm ci
@@ -24,6 +26,8 @@ npm run dev
 npm test
 npm run build
 ```
+
+`npm run dev:worker` builds the static UI into a local Worker preview. `npm run deploy` builds and deploys the Worker; it requires Wrangler authentication for the Cloudflare account. The deployed preview is restricted by Cloudflare Access to the parent email above. Keep Access enabled and previews disabled.
 
 Microphone access requires a secure browser context (localhost is supported). The UI stores state locally; clearing browser storage clears the prototype's data.
 

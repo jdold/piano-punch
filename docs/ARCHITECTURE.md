@@ -3,16 +3,20 @@
 ## Current shape
 
 ```text
-Astro page and browser modules
+Astro static page and browser modules
   ├─ microphone → AudioWorklet → local feature heuristic
   ├─ classification → SmartTimer → practice timeline
   └─ profile/session/ledger state → localStorage
 
-Cloudflare Worker + D1 schema
+Cloudflare Worker
+  ├─ serves static assets and adds response security headers
+  └─ Cloudflare Access gates the preview to the parent identity
+
+Cloudflare D1
   └─ provisioned, but not yet connected to the browser UI
 ```
 
-The UI and all current business rules run in the browser. D1 is provisioned in the Cloudflare account, but there are no authenticated API routes yet. `localStorage` is prototype persistence, not a backup or access-control boundary.
+The UI and all current business rules run in the browser. The Worker serves the static build; Cloudflare Access gates the hosted preview. D1 is provisioned in the Cloudflare account, but there are no API routes yet. `localStorage` is prototype persistence, not a backup or access-control boundary.
 
 ## Audio and timer
 

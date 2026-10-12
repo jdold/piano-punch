@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",
+    "dev:worker": "astro build && node scripts/bundle-worker.mjs && wrangler dev",
+    "deploy": "astro build && node scripts/bundle-worker.mjs && wrangler deploy",
     "preview": "astro preview",
     "test": "node --test"
   },
@@ -12,7 +14,7 @@
     "astro": "^6.0.0"
   },
   "devDependencies": {
-    "@astrojs/cloudflare": "^13.0.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "wrangler": "^4.149.0"
   }
 }
