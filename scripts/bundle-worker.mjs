@@ -25,14 +25,6 @@ for (const file of files) {
   assets[path] = { body: bytes.toString('base64'), contentType };
 }
 
-const source = `const ASSETS = ${JSON.stringify(assets)};
-const HEADERS = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'microphone=(self)' };
-export default { async fetch(request) {
-  if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method not allowed', { status: 405, headers: { ...HEADERS, Allow: 'GET, HEAD' } });
-  const path = new URL(request.url).pathname;
-  const asset = ASSETS[path === '/' ? '/index.html' : path];
-  if (!asset) return new Response('Not found', { status: 404, headers: HEADERS });
-  const bytes = Uint8Array.from(atob(asset.body), c => c.charCodeAt(0));
-  return new Response(request.method === 'HEAD' ? null : bytes, { headers: { ...HEADERS, 'Content-Type': asset.contentType, 'Cache-Control': path === '/' ? 'no-cache' : 'public, max-age=31536000, immutable' } });
-} };\n`;
+const template = await readFile(new URL('../src/worker.js', import.meta.url), 'utf8');
+const source = template.replace('__ASSETS__', JSON.stringify(assets));
 await writeFile(new URL('../dist/worker.js', import.meta.url), source);

@@ -2,14 +2,14 @@
 
 ## Current limits
 
-The hosted preview is gated by Cloudflare Access for the parent account. The app itself still has no server-side roles or cloud sync. Browser storage is accessible to anyone using that browser profile. Do not put authoritative family records in a shared device profile or treat this prototype as private multi-user storage.
+The hosted preview and API are gated by Cloudflare Access for the parent account. The Worker verifies the Access JWT audience, issuer, expiry, and parent's email before returning or changing family data. Browser storage remains a local recovery copy.
 
 ## Data handling
 
 - Microphone capture begins only for a practice session and is analyzed on-device.
-- Audio frames are discarded after classification; recordings are not enabled.
-- Session totals, child names, settings, timeline events, and the points ledger currently remain in localStorage.
-- The D1 schema exists, but the app does not yet read from or write to it.
+- Audio frames are discarded after classification; recordings are not yet enabled.
+- The family app state is stored in D1 and mirrored in localStorage for recovery. D1 writes use a revision check so one device cannot silently overwrite another device's newer state.
+- R2 is not enabled on this Cloudflare account yet, so session recording sync is not available.
 - There are no child access links yet. Do not make child routes public until each link is a high-entropy token validated server-side and restricted to one child's records.
 - No third-party AI/audio processing or analytics is configured.
 
@@ -19,5 +19,5 @@ The hosted preview is gated by Cloudflare Access for the parent account. The app
 - Validate the authenticated identity and role on every Worker write. Hiding parent controls in the UI is not authorization.
 - Use parameterized D1 statements and transactional/idempotent operations for ledger and redemption changes.
 - Keep audit events for parent corrections, awards, adjustments, approvals, and rejections.
-- If recording is ever enabled, make it opt-in, private by default, retention-limited, downloadable/deletable by a parent, and separate from audio classification.
+- Before enabling recordings, make them opt-in, private by default, retention-limited, downloadable/deletable by a parent, and separate from audio classification.
 - Review logs and error reporting so child names, practice details, and audio are not unnecessarily exposed.

@@ -12,6 +12,11 @@ let clockBase = 0;
 let lastAudioFrameAt = 0;
 let startIso = null;
 let microphoneStatus = 'idle';
+let cloudRevision = 0;
+let cloudReady = false;
+let cloudConflict = false;
+let cloudSyncTimer = null;
+let cloudSyncChain = Promise.resolve();
 const $ = (selector) => document.querySelector(selector);
 const fmt = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -20,7 +25,43 @@ const localDateTimeValue = (value) => {
   return Number.isNaN(date.getTime()) ? '' : new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 };
 
-function persist() { saveState(state); render(); }
+function persist() { saveState(state); queueCloudSync(); render(); }
+
+function queueCloudSync() {
+  if (!cloudReady || cloudConflict) return;
+  clearTimeout(cloudSyncTimer);
+  cloudSyncTimer = setTimeout(() => {
+    const snapshot = structuredClone(state);
+    cloudSyncChain = cloudSyncChain.then(async () => {
+      const response = await fetch('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: snapshot, revision: cloudRevision }) });
+      if (response.status === 409) { cloudConflict = true; $('#cloud-status').textContent = 'Sync conflict — reload'; return; }
+      if (!response.ok) throw new Error(`Cloud sync failed (${response.status})`);
+      cloudRevision = (await response.json()).revision;
+      $('#cloud-status').textContent = 'Synced';
+    }).catch(() => { $('#cloud-status').textContent = 'Offline — saved here'; });
+  }, 400);
+}
+
+async function hydrateCloudState() {
+  try {
+    const response = await fetch('/api/state', { cache: 'no-store' });
+    if (!response.ok) throw new Error('Cloud state unavailable');
+    const remote = await response.json();
+    cloudRevision = remote.revision || 0;
+    if (remote.state) {
+      state = remote.state;
+      saveState(state);
+    } else {
+      const local = JSON.parse(localStorage.getItem('piano-punch:v1') || 'null');
+      if (local?.children?.length) state = { ...state, ...local };
+    }
+    cloudReady = true;
+    $('#cloud-status').textContent = remote.state ? 'Synced' : 'Saving…';
+    if (!remote.state) queueCloudSync();
+  } catch {
+    $('#cloud-status').textContent = 'Offline — saved here';
+  }
+}
 function child() { return state.children.find((c) => c.id === selectedChild); }
 function sessionElapsed() { return timer?.snapshot(performance.now() - clockBase).elapsedMs || 0; }
 function activeInfo() { return timer?.snapshot(performance.now() - clockBase) || { state: 'ready', activeMs: 0, provisionalMs: 0, elapsedMs: 0, events: [] }; }
@@ -126,7 +167,7 @@ async function beginPractice() {
     const elapsedNow=performance.now()-clockBase;
     if(audio && lastAudioFrameAt && performance.now()-lastAudioFrameAt>1500 && timer.state!==TIMER_STATES.UNAVAILABLE) loseMic();
     const snapshot=timer.tick(elapsedNow);
-    if(performance.now()-checkpointAt>=1000){ checkpointAt=performance.now(); state.currentSession.elapsedMs=snapshot.elapsedMs; state.currentSession.creditedMs=snapshot.activeMs; state.currentSession.events=snapshot.events; saveState(state); }
+    if(performance.now()-checkpointAt>=5000){ checkpointAt=performance.now(); state.currentSession.elapsedMs=snapshot.elapsedMs; state.currentSession.creditedMs=snapshot.activeMs; state.currentSession.events=snapshot.events; saveState(state); queueCloudSync(); }
     render();
   }, 250);
   await startAudio();
@@ -352,7 +393,8 @@ function childFor(id) { return state.children.find((c) => c.id === id); }
 function resetRewardForm() { $('#reward-form').reset(); $('#reward-id').value=''; $('#reward-submit').textContent='Add reward'; $('#reward-cancel').hidden=true; }
 function showToast(text) { const el=$('#toast'); el.textContent=text; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),2300); }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await hydrateCloudState();
   bindEvents();
   fillSettings(child());
   $('#reward-cancel').addEventListener('click', resetRewardForm);
