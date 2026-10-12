@@ -5,8 +5,8 @@ export const STORAGE_KEY = 'piano-punch:v1';
 export function initialState() {
   return {
     children: [
-      { id: 'son', name: 'Son', goalMinutes: 20, inactivitySeconds: 20, requiredWeekdays: [1, 2, 3, 4, 5, 6], excusedDates: [], pointRules: structuredClone(DEFAULT_RULES) },
-      { id: 'daughter', name: 'Daughter', goalMinutes: 20, inactivitySeconds: 20, requiredWeekdays: [1, 2, 3, 4, 5, 6], excusedDates: [], pointRules: structuredClone(DEFAULT_RULES) },
+      { id: 'son', name: 'Gordon', goalMinutes: 20, inactivitySeconds: 20, requiredWeekdays: [1, 2, 3, 4, 5, 6], excusedDates: [], pointRules: structuredClone(DEFAULT_RULES) },
+      { id: 'daughter', name: 'Caroline', goalMinutes: 20, inactivitySeconds: 20, requiredWeekdays: [1, 2, 3, 4, 5, 6], excusedDates: [], pointRules: structuredClone(DEFAULT_RULES) },
     ],
     sessions: [],
     ledger: [],
