@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "piano-punch",
+  "main": "@astrojs/cloudflare/entrypoints/server",
+  "compatibility_date": "2026-10-12",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "piano-punch",
+      "database_id": "7a90312a-3dbd-4aed-ade5-a5a4d45f60f7",
+      "migrations_dir": "./migrations"
+    }
+  ]
+}

@@ -1,0 +1,93 @@
+---
+const title = 'Piano Punch';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f8f5ee" />
+    <title>{title} · Piano practice</title>
+    <meta name="description" content="A calm, encouraging piano practice tracker for the whole family." />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <a class="brand" href="#home" aria-label="Piano Punch home"><span class="brand-mark">♫</span><span>Piano <b>Punch</b></span></a>
+        <button id="parent-toggle" class="parent-link" type="button">Parent <span class="pending-pill"><span id="pending-count">0</span></span></button>
+      </header>
+
+      <section class="hero" id="home">
+        <div>
+          <p class="eyebrow">YOUR PRACTICE SPACE</p>
+          <h1>Small steps.<br /><em>Beautiful music.</em></h1>
+          <p class="intro">Every practice session moves you forward.</p>
+        </div>
+        <div class="music-note note-one">♪</div><div class="music-note note-two">♫</div>
+      </section>
+
+      <section class="child-row" aria-label="Choose a child">
+        <div><p class="eyebrow">PLAYING TODAY</p><h2 id="child-label">Son</h2></div>
+        <div id="child-picker" class="child-picker"></div>
+        <button id="rename-child" class="icon-button" type="button" aria-label="Rename selected child" title="Rename">✎</button>
+      </section>
+
+      <section class="practice-card" aria-labelledby="practice-heading">
+        <div class="practice-top">
+          <div><p class="eyebrow">TODAY'S PRACTICE</p><h2 id="practice-heading">You're doing great</h2></div>
+          <div class="streak-badge"><span>✦</span><div><small>STREAK</small><strong id="streak-count">0 days</strong></div></div>
+        </div>
+        <div class="practice-main">
+          <div class="goal-ring" id="goal-ring" aria-label="Daily goal progress"><div class="goal-ring-inner"><strong id="goal-ring-value">0%</strong><small>goal</small></div></div>
+          <div class="goal-copy"><strong id="goal-label">0 / 20 min today</strong><p>You're building a lovely habit, one note at a time.</p><div class="points-line"><span class="star">✦</span><b id="point-total">0</b> points available <small id="points-earned">0 earned</small></div><div id="badges" class="badges"></div></div>
+        </div>
+        <div class="practice-footer"><span>Active practice today</span><strong id="today-active">00:00</strong></div>
+      </section>
+
+      <section class="session-card" aria-labelledby="session-heading">
+        <div class="session-title"><div><p class="eyebrow">YOUR PRACTICE SESSION</p><h2 id="session-heading">Ready when you are</h2></div><span class="live-pill" id="live-state" data-state="listening"><i></i>Listening</span></div>
+        <div class="session-timers" id="session-detail" hidden>
+          <div class="live-ring-wrap"><div id="live-ring" class="live-ring"><span>♫</span></div><small id="session-credit-note">Verified active time</small></div>
+          <div class="timer-numbers"><div><small>ACTIVE PRACTICE</small><strong id="session-active">00:00</strong></div><div><small>SESSION TIME</small><strong id="session-elapsed">00:00</strong></div></div>
+        </div>
+        <p id="permission-message" class="notice" hidden></p>
+        <p class="session-hint">The microphone listens on this device. Your practice session stays open until you punch out.</p>
+        <div class="punch-row"><button class="punch-button" id="punch-in" type="button">Punch in <span>→</span></button><button class="punch-button punch-out" id="punch-out" type="button" disabled>Punch out <span>■</span></button></div>
+        <div class="state-legend"><span><i class="dot playing"></i>Playing</span><span><i class="dot grace"></i>Grace period</span><span><i class="dot paused"></i>Paused</span></div>
+      </section>
+
+      <section class="lower-grid">
+        <section class="panel rewards-panel">
+          <div class="panel-heading"><div><p class="eyebrow">LITTLE WINS</p><h2>Rewards to work toward</h2></div><span class="panel-icon">✧</span></div>
+          <div id="reward-progress" class="reward-list"></div>
+        </section>
+        <section class="panel history-panel">
+          <div class="panel-heading"><div><p class="eyebrow">YOUR JOURNEY</p><h2>Recent practice</h2></div><span class="panel-icon">⌁</span></div>
+          <ul id="history-list" class="history-list"></ul>
+        </section>
+      </section>
+
+      <section class="panel parent-dashboard" id="parent-dashboard" hidden>
+        <div class="panel-heading"><div><p class="eyebrow">PARENT CONTROLS</p><h2>Family dashboard</h2></div><span class="panel-icon">⚙</span></div>
+        <p class="prototype-note">Prototype data stays in this browser. Parent controls are not protected by sign-in yet.</p>
+        <div class="parent-grid">
+          <div class="admin-block"><h3>Children</h3><div id="parent-children"></div></div>
+          <div class="admin-block"><h3>Practice and points</h3><form id="goal-form" class="compact-form"><label>Daily active goal <span><input id="goal-input" type="number" min="1" max="180" /> min</span></label><label>Pause threshold <span><input id="threshold-input" type="number" min="5" max="120" /> sec</span></label><label>Daily completion points <input id="daily-points" type="number" min="0" /></label><label>Weekly lesson points <input id="lesson-points" type="number" min="0" /></label><label>Practice day points <input id="practice-points" type="number" min="0" /></label><label>Extra minutes step <span><input id="extra-step" type="number" min="1" /> min</span></label><label>Points per extra step <input id="extra-points" type="number" min="0" /></label><div class="milestone-inputs"><label>3d <input id="milestone-3" type="number" min="0" /></label><label>5d <input id="milestone-5" type="number" min="0" /></label><label>7d <input id="milestone-7" type="number" min="0" /></label><label>14d <input id="milestone-14" type="number" min="0" /></label><label>30d <input id="milestone-30" type="number" min="0" /></label></div><fieldset class="weekday-settings"><legend>Required practice days</legend><label><input type="checkbox" value="1" class="weekday-check" /> Mon</label><label><input type="checkbox" value="2" class="weekday-check" /> Tue</label><label><input type="checkbox" value="3" class="weekday-check" /> Wed</label><label><input type="checkbox" value="4" class="weekday-check" /> Thu</label><label><input type="checkbox" value="5" class="weekday-check" /> Fri</label><label><input type="checkbox" value="6" class="weekday-check" /> Sat</label><label><input type="checkbox" value="0" class="weekday-check" /> Sun</label></fieldset><button class="small-button">Save settings</button></form><form id="excuse-form" class="compact-form"><label>Excuse / vacation day <input type="date" id="excuse-date" required /></label><input id="excuse-reason" placeholder="Reason (optional)" /><button class="small-button">Add rest day</button></form><div id="excused-list"></div></div>
+          <div class="admin-block"><h3>Rewards</h3><form id="reward-form" class="compact-form"><input id="reward-name" placeholder="Reward name" required /><input id="reward-description" placeholder="Description" /><input id="reward-image" type="url" placeholder="Optional image URL" /><label>Point cost <input id="reward-cost" type="number" min="1" required /></label><input id="reward-restrictions" placeholder="Optional restriction" /><button class="small-button">Add reward</button></form><div id="reward-admin-list"></div></div>
+          <div class="admin-block"><h3>Pending requests</h3><div id="redemption-list"></div></div>
+          <div class="admin-block"><h3>Points adjustment</h3><form id="adjust-form" class="compact-form"><input id="adjust-points" type="number" placeholder="+ / − points" required /><input id="adjust-note" placeholder="Reason" required /><button class="small-button">Save adjustment</button></form><div class="ledger-wrap"><ul id="ledger-list" class="history-list"></ul></div></div>
+          <div class="admin-block"><h3>Special achievement</h3><form id="special-form" class="compact-form"><input id="special-name" placeholder="Achievement" required /><input id="special-points" type="number" min="1" placeholder="Points" required /><button class="small-button">Award points</button></form></div>
+          <div class="admin-block"><h3>Practice timeline and corrections</h3><div id="session-audit-list"></div></div>
+        </div>
+      </section>
+
+      <footer><span>Made for family practice</span><span>♫</span><span>One note at a time</span></footer>
+    </main>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
+
+<script>
+  import '../styles/global.css';
+  import '../lib/app.js';
+</script>
