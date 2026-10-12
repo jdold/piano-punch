@@ -10,6 +10,7 @@ The hosted preview is gated by Cloudflare Access for the parent account. The app
 - Audio frames are discarded after classification; recordings are not enabled.
 - Session totals, child names, settings, timeline events, and the points ledger currently remain in localStorage.
 - The D1 schema exists, but the app does not yet read from or write to it.
+- There are no child access links yet. Do not make child routes public until each link is a high-entropy token validated server-side and restricted to one child's records.
 - No third-party AI/audio processing or analytics is configured.
 
 ## Required before family deployment

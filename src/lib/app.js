@@ -1,4 +1,5 @@
 import { SmartTimer, TIMER_STATES } from './smart-timer.js';
+import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
 import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, points } from './piano-state.js';
 
@@ -10,14 +11,19 @@ let ticker = null;
 let clockBase = 0;
 let lastAudioFrameAt = 0;
 let startIso = null;
+let microphoneStatus = 'idle';
 const $ = (selector) => document.querySelector(selector);
 const fmt = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const localDateTimeValue = (value) => {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+};
 
 function persist() { saveState(state); render(); }
 function child() { return state.children.find((c) => c.id === selectedChild); }
 function sessionElapsed() { return timer?.snapshot(performance.now() - clockBase).elapsedMs || 0; }
-function activeInfo() { return timer?.snapshot(performance.now() - clockBase) || { state: 'listening', activeMs: 0, provisionalMs: 0, elapsedMs: 0, events: [] }; }
+function activeInfo() { return timer?.snapshot(performance.now() - clockBase) || { state: 'ready', activeMs: 0, provisionalMs: 0, elapsedMs: 0, events: [] }; }
 
 function render() {
   const c = child();
@@ -41,10 +47,15 @@ function render() {
   $('#session-elapsed').textContent = fmt(current.elapsedMs);
   $('#session-active').textContent = fmt(current.activeMs + current.provisionalMs);
   $('#session-credit-note').textContent = current.provisionalMs ? `${fmt(current.provisionalMs)} provisional` : 'Verified active time';
-  $('#live-state').textContent = stateLabel(current.state);
-  $('#live-state').dataset.state = current.state;
-  $('#punch-in').disabled = Boolean(state.currentSession);
-  $('#punch-out').disabled = !state.currentSession;
+  const displayState = state.currentSession && microphoneStatus === 'starting' ? 'starting' : current.state;
+  $('#live-state').textContent = stateLabel(displayState);
+  $('#live-state').dataset.state = displayState;
+  $('#session-heading').textContent = !state.currentSession ? 'Ready when you are' : displayState === 'starting' ? 'Starting your session' : 'Practice session';
+  $('#session-hint').textContent = state.currentSession
+    ? 'This session stays open until you punch out. Active time counts only while piano is detected.'
+    : 'The microphone stays off until your child punches in.';
+  $('#punch-in').hidden = Boolean(state.currentSession);
+  $('#punch-out').hidden = !state.currentSession;
   $('#practice-button').textContent = state.currentSession ? 'Session in progress' : `Practice with ${c.name}`;
   $('#session-detail').hidden = !state.currentSession;
   $('#reward-progress').innerHTML = state.rewards.filter((r) => r.enabled).map((r) => {
@@ -66,7 +77,7 @@ function render() {
 }
 
 function stateLabel(value) {
-  return ({ listening: 'Listening', playing: 'Playing', grace: 'Grace period', paused: 'Paused', unavailable: 'Microphone unavailable', ended: 'Session complete' })[value] || 'Listening';
+  return ({ ready: 'Ready', starting: 'Starting mic…', listening: 'Listening', playing: 'Playing', grace: 'Grace period', paused: 'Paused', unavailable: 'Microphone unavailable', ended: 'Session complete' })[value] || 'Ready';
 }
 
 function renderParent() {
@@ -83,8 +94,10 @@ function renderParent() {
   $('#excused-list').innerHTML = child().excusedDates.map((date) => `<article class="child-admin"><div><strong>${date}</strong><small>Excused / rest day</small></div><button class="small-button" data-unexcuse="${date}">Remove</button></article>`).join('') || '<p class="muted">No excused days saved.</p>';
   $('#session-audit-list').innerHTML = state.sessions.filter((s) => s.childId === selectedChild).slice().reverse().slice(0,8).map((s) => {
     const time = (ms) => `${Math.floor(Math.max(0,ms)/60000)}:${String(Math.floor(Math.max(0,ms)/1000)%60).padStart(2,'0')}`;
+    const startedAt = s.startedAt || new Date().toISOString();
+    const endedAt = s.endedAt || new Date(new Date(startedAt).getTime() + Math.max(0, s.elapsedMs || 0)).toISOString();
     const timeline = (s.events || []).map((e) => `<li><span>${time(e.at)} · ${escapeHtml(e.state)} · ${escapeHtml(e.reason)}</span><small>${typeof e.confidence === 'number' ? `${Math.round(e.confidence*100)}% confidence` : ''}</small></li>`).join('');
-    return `<details class="timeline-row"><summary><strong>${s.date}</strong> · ${time(s.creditedMs)} credited · ${escapeHtml(s.status)}</summary>${s.status==='interrupted'?`<button class="small-button" data-review-session="${s.id}">Approve verified time</button>`:''}<button class="small-button" data-correct-session="${s.id}">Correct time</button><ul>${timeline || '<li>No detector transitions recorded.</li>'}</ul>${s.correctionMs ? `<small>Manual adjustment: ${s.correctionMs>0?'+':'−'}${time(Math.abs(s.correctionMs))} · ${escapeHtml(s.correctionReason || '')}</small>` : ''}</details>`;
+    return `<details class="timeline-row"><summary><strong>${s.date}</strong> · ${time(s.creditedMs)} credited · ${escapeHtml(s.status)}</summary>${s.status==='interrupted'?`<button class="small-button" data-review-session="${s.id}">Approve verified time</button>`:''}<button class="small-button" data-correct-session="${s.id}">Edit session punches</button><div class="session-edit-form" data-session-form="${s.id}" hidden><label>Start <input type="datetime-local" data-session-start required value="${localDateTimeValue(startedAt)}" /></label><label>End <input type="datetime-local" data-session-end required value="${localDateTimeValue(endedAt)}" /></label><label>Credited active minutes <input type="number" min="0" step="0.1" data-session-active required value="${(Math.max(0,s.creditedMs)/60_000).toFixed(1)}" /></label><label>Reason <input type="text" data-session-reason required placeholder="Why are you correcting this?" /></label><button class="small-button" type="button" data-save-session="${s.id}">Save correction</button></div><ul>${timeline || '<li>No detector transitions recorded.</li>'}</ul>${s.correctionMs ? `<small>Manual adjustment: ${s.correctionMs>0?'+':'−'}${time(Math.abs(s.correctionMs))} · ${escapeHtml(s.correctionReason || '')}</small>` : ''}</details>`;
   }).join('') || '<p class="muted">No sessions to review.</p>';
 }
 
@@ -102,7 +115,7 @@ function fillSettings(c) {
 
 async function beginPractice() {
   if (state.currentSession) return;
-  const now = performance.now(); clockBase = now; startIso = new Date().toISOString();
+  clockBase = performance.now(); startIso = new Date().toISOString(); microphoneStatus = 'starting';
   timer = new SmartTimer({ thresholdMs: child().inactivitySeconds * 1000, nowMs: 0 });
   timer.punchIn(0);
   state.currentSession = { id: crypto.randomUUID(), childId: selectedChild, startedAt: startIso, date: dayKey(), recoveryRequired: false, elapsedMs: 0, creditedMs: 0, events: [] };
@@ -111,25 +124,48 @@ async function beginPractice() {
   let checkpointAt=0;
   ticker = setInterval(() => {
     const elapsedNow=performance.now()-clockBase;
-    if(audio?.context?.state === 'running' && lastAudioFrameAt && performance.now()-lastAudioFrameAt>500 && timer.state!==TIMER_STATES.UNAVAILABLE) timer.microphoneLost(elapsedNow);
+    if(audio && lastAudioFrameAt && performance.now()-lastAudioFrameAt>1500 && timer.state!==TIMER_STATES.UNAVAILABLE) loseMic();
     const snapshot=timer.tick(elapsedNow);
     if(performance.now()-checkpointAt>=1000){ checkpointAt=performance.now(); state.currentSession.elapsedMs=snapshot.elapsedMs; state.currentSession.creditedMs=snapshot.activeMs; state.currentSession.events=snapshot.events; saveState(state); }
     render();
   }, 250);
+  await startAudio();
+}
+
+async function startAudio() {
+  if (!timer || !state.currentSession) return;
+  microphoneStatus = 'starting';
+  $('#permission-message').hidden = true;
+  $('#retry-audio').hidden = true;
+  render();
   let stream = null;
+  let context = null;
   try {
-    if (!navigator.mediaDevices?.getUserMedia || !('AudioWorkletNode' in window)) throw new Error('Live audio is not supported in this browser');
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } });
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone capture is unavailable. Open this page in Safari over HTTPS.');
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const context = new AudioCtx();
-    if (context.state === 'suspended') await context.resume();
+    if (!AudioCtx || !('AudioWorkletNode' in window)) throw new Error('This browser does not support the live audio analyzer.');
+    // Begin both operations on the tap; iOS Safari may drop user activation after an await.
+    context = new AudioCtx();
+    const resumePromise = context.state === 'suspended' ? context.resume() : Promise.resolve();
+    resumePromise.catch(() => {});
+    stream = await requestMicrophone((constraints) => navigator.mediaDevices.getUserMedia(constraints));
+    if (!state.currentSession) {
+      stream.getTracks().forEach((track) => track.stop());
+      await context.close();
+      return;
+    }
+    audio = { stream, context, source: null, node: null, mute: null };
+    await resumePromise;
     await context.audioWorklet.addModule('/audio/piano-worklet.js');
     const source = context.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(context, 'piano-input', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    const mute = context.createGain(); mute.gain.value = 0;
+    audio.source = source; audio.node = node; audio.mute = mute;
     const gate = new PianoEvidenceGate();
     node.port.onmessage = (event) => {
-      if (event.data?.type !== 'frame') return;
+      if (event.data?.type !== 'frame' || !timer || !state.currentSession) return;
       lastAudioFrameAt=performance.now();
+      if (microphoneStatus === 'starting') microphoneStatus = 'listening';
       const features = analyzePianoFrame(new Float32Array(event.data.samples), event.data.sampleRate);
       const classValue = gate.push(features, performance.now() - clockBase);
       const priorEvents = timer.events.length;
@@ -137,31 +173,39 @@ async function beginPractice() {
       if (timer.events.length > priorEvents) timer.events.at(-1).confidence = Number(features.score.toFixed(3));
       render();
     };
-    source.connect(node); node.connect(context.destination);
-    audio = { stream, context, source, node };
+    source.connect(node); node.connect(mute); mute.connect(context.destination);
     lastAudioFrameAt=performance.now();
     audio.stream.getAudioTracks()[0]?.addEventListener('ended', () => loseMic());
+    context.addEventListener('statechange', () => {
+      if (state.currentSession && context.state !== 'running' && microphoneStatus !== 'starting') loseMic();
+    });
   } catch (error) {
     stream?.getTracks().forEach((track) => track.stop());
     if (audio?.context) audio.context.close().catch(()=>{});
+    else if (context) context.close().catch(()=>{});
     audio = null;
+    if (!state.currentSession) return;
+    microphoneStatus = 'unavailable';
     timer.microphoneLost(performance.now() - clockBase);
-    $('#permission-message').textContent = `${error.message || 'Microphone unavailable'}. Practice time will not be credited until audio detection is working.`;
+    $('#permission-message').textContent = microphoneErrorMessage(error);
     $('#permission-message').hidden = false;
+    $('#retry-audio').hidden = false;
   }
   render();
 }
 
 function loseMic() {
+  microphoneStatus = 'unavailable';
   if (timer && state.currentSession) timer.microphoneLost(performance.now() - clockBase);
   if (audio?.context) audio.context.suspend().catch(()=>{});
   $('#permission-message').textContent = 'Microphone input was lost. Timer paused and no unverified time is credited.';
-  $('#permission-message').hidden = false; render();
+  $('#permission-message').hidden = false; $('#retry-audio').hidden = false; render();
 }
 
 function stopAudio() {
   if (ticker) clearInterval(ticker); ticker = null;
   if (audio?.node) audio.node.disconnect();
+  if (audio?.mute) audio.mute.disconnect();
   if (audio?.source) audio.source.disconnect();
   if (audio?.stream) audio.stream.getTracks().forEach((track) => track.stop());
   if (audio?.context) audio.context.close().catch(()=>{});
@@ -177,7 +221,7 @@ function finishPractice() {
   state.sessions.push(session); state.currentSession = null;
   settlePracticeDay(state, session.childId, session.date);
   $('#permission-message').hidden = true;
-  timer = null; startIso = null; stopAudio(); persist();
+  timer = null; startIso = null; microphoneStatus = 'idle'; stopAudio(); persist();
   const earned=points.ledgerBalance(state.ledger,session.childId)-before;
   if(earned>0) showToast(`Lovely practice! +${earned} points earned${[3,5,7,14,30].includes(currentStreak(state,childFor(session.childId)))?' · streak badge unlocked':''}`);
 }
@@ -189,6 +233,7 @@ function bindEvents() {
   });
   $('#punch-in').addEventListener('click', beginPractice);
   $('#punch-out').addEventListener('click', finishPractice);
+  $('#retry-audio').addEventListener('click', startAudio);
   $('#parent-toggle').addEventListener('click', () => { state.parentMode = !state.parentMode; persist(); });
   $('#rename-child').addEventListener('click', () => {
     const next = prompt('Child display name', child().name)?.trim(); if (next) { child().name = next; persist(); }
@@ -207,8 +252,11 @@ function bindEvents() {
   $('#reward-form').addEventListener('submit', (event) => {
     event.preventDefault(); const name = $('#reward-name').value.trim(); const cost = Number($('#reward-cost').value);
     if (!name || !Number.isInteger(cost) || cost <= 0) return;
-    state.rewards.push({ id: crypto.randomUUID(), name, description: $('#reward-description').value.trim(), image: $('#reward-image').value.trim(), restrictions: $('#reward-restrictions').value.trim(), cost, enabled: true });
-    event.target.reset(); persist();
+    const editId=$('#reward-id').value;
+    const fields={name,description:$('#reward-description').value.trim(),image:$('#reward-image').value.trim(),restrictions:$('#reward-restrictions').value.trim(),cost};
+    if(editId){ Object.assign(state.rewards.find((reward)=>reward.id===editId),fields); showToast('Reward updated.'); }
+    else { state.rewards.push({id:crypto.randomUUID(),...fields,enabled:true}); showToast('Reward added.'); }
+    resetRewardForm(); persist();
   });
   $('#special-form').addEventListener('submit', (event) => {
     event.preventDefault(); const n = Number($('#special-points').value); if (!Number.isInteger(n) || n <= 0) return;
@@ -236,14 +284,46 @@ function bindEvents() {
     const unexcuse=event.target.closest('[data-unexcuse]');
     if (unexcuse) { child().excusedDates=child().excusedDates.filter((date)=>date!==unexcuse.dataset.unexcuse); recalculateChildAwards(state,child().id); persist(); }
     const editReward=event.target.closest('[data-edit-reward]');
-    if (editReward) { const item=state.rewards.find((x)=>x.id===editReward.dataset.editReward); const name=prompt('Reward name',item.name); if(name?.trim())item.name=name.trim(); const cost=prompt('Point cost',String(item.cost)); if(cost && Number.isInteger(Number(cost)) && Number(cost)>0)item.cost=Number(cost); const description=prompt('Description',item.description||''); if(description!==null)item.description=description; const restrictions=prompt('Redemption restriction (optional)',item.restrictions||''); if(restrictions!==null)item.restrictions=restrictions; const image=prompt('Optional image URL',item.image||''); if(image!==null)item.image=image; persist(); }
+    if (editReward) {
+      const item=state.rewards.find((x)=>x.id===editReward.dataset.editReward);
+      $('#reward-id').value=item.id; $('#reward-name').value=item.name; $('#reward-description').value=item.description||'';
+      $('#reward-image').value=item.image||''; $('#reward-cost').value=item.cost; $('#reward-restrictions').value=item.restrictions||'';
+      $('#reward-submit').textContent='Save reward'; $('#reward-cancel').hidden=false; $('#reward-name').focus();
+    }
     const correction=event.target.closest('[data-correct-session]');
     if (correction) {
-      const session=state.sessions.find((s)=>s.id===correction.dataset.correctSession); const delta=Number(prompt('Adjust credited minutes. Use a negative number to remove time.')); const reason=prompt('Correction reason');
-      if(Number.isFinite(delta)&&delta!==0&&reason?.trim()){
-        const change=Math.trunc(delta*60_000); session.creditedMs=Math.max(0,session.creditedMs+change); session.correctionMs+=change; session.correctionReason=reason.trim(); session.events.push({at:session.elapsedMs,state:'manual_correction',reason:reason.trim(),deltaMs:change});
-        settlePracticeDay(state,session.childId,session.date); reconcilePracticeDay(state,session.childId,session.date,crypto.randomUUID()); persist();
+      const form=correction.closest('.timeline-row').querySelector(`[data-session-form="${correction.dataset.correctSession}"]`);
+      form.hidden=!form.hidden;
+    }
+    const saveCorrection=event.target.closest('[data-save-session]');
+    if (saveCorrection) {
+      const session=state.sessions.find((s)=>s.id===saveCorrection.dataset.saveSession);
+      const form=saveCorrection.closest('.session-edit-form');
+      const startMs=new Date(form.querySelector('[data-session-start]').value).getTime();
+      const endMs=new Date(form.querySelector('[data-session-end]').value).getTime();
+      const activeValue=form.querySelector('[data-session-active]').value;
+      const activeMinutes=Number(activeValue);
+      const reason=form.querySelector('[data-session-reason]').value.trim();
+      const creditedMs=Math.round(activeMinutes*60_000);
+      if(!form.querySelector('[data-session-start]').value||!form.querySelector('[data-session-end]').value||activeValue===''||!Number.isFinite(startMs)||!Number.isFinite(endMs)||endMs<startMs||!Number.isFinite(creditedMs)||creditedMs<0||creditedMs>endMs-startMs||!reason){
+        showToast('Check the times, active minutes, and correction reason.');
+        return;
       }
+      const before={startedAt:session.startedAt,endedAt:session.endedAt,creditedMs:session.creditedMs,date:session.date};
+      const oldDate=session.date;
+      const deltaMs=creditedMs-session.creditedMs;
+      session.startedAt=new Date(startMs).toISOString();
+      session.endedAt=new Date(endMs).toISOString();
+      session.elapsedMs=endMs-startMs;
+      session.date=dayKey(new Date(startMs));
+      session.creditedMs=creditedMs;
+      session.correctionMs=(session.correctionMs||0)+deltaMs;
+      session.correctionReason=reason;
+      session.events.push({at:session.elapsedMs,state:'manual_correction',reason,deltaMs,before,after:{startedAt:session.startedAt,endedAt:session.endedAt,creditedMs, date:session.date},correctedAt:new Date().toISOString()});
+      const correctionId=crypto.randomUUID();
+      settlePracticeDay(state,session.childId,oldDate); reconcilePracticeDay(state,session.childId,oldDate,correctionId);
+      if(session.date!==oldDate){settlePracticeDay(state,session.childId,session.date);reconcilePracticeDay(state,session.childId,session.date,correctionId);}
+      persist(); showToast('Session correction saved and logged.');
     }
     const review=event.target.closest('[data-review-session]');
     if(review){ const session=state.sessions.find((s)=>s.id===review.dataset.reviewSession); session.status='complete'; settlePracticeDay(state,session.childId,session.date); reconcilePracticeDay(state,session.childId,session.date,crypto.randomUUID()); persist(); showToast('Verified practice time approved'); }
@@ -263,10 +343,12 @@ function bindEvents() {
 }
 
 function childFor(id) { return state.children.find((c) => c.id === id); }
+function resetRewardForm() { $('#reward-form').reset(); $('#reward-id').value=''; $('#reward-submit').textContent='Add reward'; $('#reward-cancel').hidden=true; }
 function showToast(text) { const el=$('#toast'); el.textContent=text; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),2300); }
 
 document.addEventListener('DOMContentLoaded', () => {
   bindEvents();
   fillSettings(child());
+  $('#reward-cancel').addEventListener('click', resetRewardForm);
   render();
 });

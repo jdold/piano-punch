@@ -1,9 +1,9 @@
 # Roadmap
 
-## Next: safe persistence
+## Next: child links and safe persistence
 
-1. Add authenticated Worker endpoints and connect the UI to D1. Keep the prototype's domain calculations reusable and testable.
-2. Enforce parent and child permissions on the server; put the app behind Cloudflare Access before any family-facing deployment.
+1. Connect the UI to D1 so practice and rewards sync between the children's tablet and the parent's devices.
+2. Keep the parent dashboard behind Cloudflare Access. Give each child a separate high-entropy bearer link that only accesses that child's data; do not bypass Access until the Worker validates that token on every child API request.
 3. Make session save/recovery and historical edits transactional. Recalculate affected streaks and awards using deterministic keys and compensating ledger entries.
 4. Add integration tests for duplicate requests, concurrent redemption approvals, corrections, missed days, and lesson confirmations.
 

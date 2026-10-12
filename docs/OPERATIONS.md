@@ -17,6 +17,7 @@ The browser prototype uses localStorage and does not call D1. A local UI session
 ## Cloudflare resources
 
 - Astro 6 produces a static site; `scripts/bundle-worker.mjs` bundles generated assets into `dist/worker.js` for deployment as a Worker module.
+- The deployed preview is currently protected by Cloudflare Access at the whole-site level. Do not add a public kid URL exception until child-link tokens are checked by Worker API routes.
 - Wrangler binds the `piano-punch` D1 database as `DB` for future authenticated API routes. The current app does not use this binding.
 - The D1 schema is in `migrations/`; keep schema changes as new numbered migrations.
 - No R2 bucket, recording storage, or third-party audio service is configured.
