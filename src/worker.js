@@ -54,12 +54,36 @@ function certificateSpki(der) {
 
 async function api(request, env) {
   if (!await authorized(request)) return json({ error: 'Parent sign-in required.' }, 401);
+  const url = new URL(request.url);
+  const recordingMatch = url.pathname.match(/^\/api\/recordings\/([0-9a-f-]{36})$/i);
+  if (recordingMatch) {
+    if (!env.RECORDINGS) return json({ error: 'Recording storage is not configured.' }, 503);
+    const key = `sessions/${recordingMatch[1].toLowerCase()}.audio`;
+    if (request.method === 'PUT') {
+      const type = request.headers.get('content-type') || '';
+      const length = Number(request.headers.get('content-length') || 0);
+      if (!type.toLowerCase().startsWith('audio/')) return json({ error: 'Only audio recordings are accepted.' }, 415);
+      if (length > 100 * 1024 * 1024) return json({ error: 'Recording must be under 100 MB.' }, 413);
+      let bytes = 0;
+      const limitedBody = request.body.pipeThrough(new TransformStream({ transform(chunk, controller) { bytes += chunk.byteLength; if (bytes > 100 * 1024 * 1024) throw new Error('Recording exceeds 100 MB.'); controller.enqueue(chunk); } }));
+      await env.RECORDINGS.put(key, limitedBody, { httpMetadata: { contentType: type }, customMetadata: { sessionId: recordingMatch[1], uploadedAt: new Date().toISOString() } });
+      return json({ ok: true });
+    }
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      const object = await env.RECORDINGS.get(key);
+      if (!object) return json({ error: 'Recording not found.' }, 404);
+      const headers = new Headers({ 'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': String(object.size), 'Content-Disposition': 'inline' });
+      return new Response(request.method === 'HEAD' ? null : object.body, { headers });
+    }
+    if (request.method === 'DELETE') { await env.RECORDINGS.delete(key); return json({ ok: true }); }
+    return json({ error: 'Method not allowed.' }, 405);
+  }
   if (!env.DB) return json({ error: 'Database is not configured.' }, 503);
-  if (request.method === 'GET' && new URL(request.url).pathname === '/api/state') {
+  if (request.method === 'GET' && url.pathname === '/api/state') {
     const row = await env.DB.prepare('SELECT state_json, revision FROM app_state WHERE id = 1').first();
     return json(row ? { state: JSON.parse(row.state_json), revision: row.revision } : { state: null, revision: 0 });
   }
-  if (request.method === 'PUT' && new URL(request.url).pathname === '/api/state') {
+  if (request.method === 'PUT' && url.pathname === '/api/state') {
     const length = Number(request.headers.get('content-length') || 0);
     if (length > 1_000_000) return json({ error: 'State is too large.' }, 413);
     let input;
@@ -83,7 +107,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/api/')) {
-      if (!['GET', 'PUT'].includes(request.method)) return json({ error: 'Method not allowed.' }, 405);
+      if (!['GET', 'HEAD', 'PUT', 'DELETE'].includes(request.method)) return json({ error: 'Method not allowed.' }, 405);
       try { return await api(request, env); } catch { return json({ error: 'Storage request failed.' }, 500); }
     }
     if (!['GET', 'HEAD'].includes(request.method)) return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } });

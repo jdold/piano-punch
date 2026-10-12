@@ -138,13 +138,14 @@ function renderParent() {
     const startedAt = s.startedAt || new Date().toISOString();
     const endedAt = s.endedAt || new Date(new Date(startedAt).getTime() + Math.max(0, s.elapsedMs || 0)).toISOString();
     const timeline = (s.events || []).map((e) => `<li><span>${time(e.at)} · ${escapeHtml(e.state)} · ${escapeHtml(e.reason)}</span><small>${typeof e.confidence === 'number' ? `${Math.round(e.confidence*100)}% confidence` : ''}</small></li>`).join('');
-    return `<details class="timeline-row"><summary><strong>${s.date}</strong> · ${time(s.creditedMs)} credited · ${escapeHtml(s.status)}</summary>${s.status==='interrupted'?`<button class="small-button" data-review-session="${s.id}">Approve verified time</button>`:''}<button class="small-button" data-correct-session="${s.id}">Edit session punches</button><div class="session-edit-form" data-session-form="${s.id}" hidden><label>Start <input type="datetime-local" data-session-start required value="${localDateTimeValue(startedAt)}" /></label><label>End <input type="datetime-local" data-session-end required value="${localDateTimeValue(endedAt)}" /></label><label>Credited active minutes <input type="number" min="0" step="0.1" data-session-active required value="${(Math.max(0,s.creditedMs)/60_000).toFixed(1)}" /></label><label>Reason <input type="text" data-session-reason required placeholder="Why are you correcting this?" /></label><button class="small-button" type="button" data-save-session="${s.id}">Save correction</button></div><ul>${timeline || '<li>No detector transitions recorded.</li>'}</ul>${s.correctionMs ? `<small>Manual adjustment: ${s.correctionMs>0?'+':'−'}${time(Math.abs(s.correctionMs))} · ${escapeHtml(s.correctionReason || '')}</small>` : ''}</details>`;
+    return `<details class="timeline-row"><summary><strong>${s.date}</strong> · ${time(s.creditedMs)} credited · ${escapeHtml(s.status)}</summary>${s.status==='interrupted'?`<button class="small-button" data-review-session="${s.id}">Approve verified time</button>`:''}<button class="small-button" data-correct-session="${s.id}">Edit session punches</button>${s.recording?`<div class="recording-audit"><p>Private recording · ${Math.max(1,Math.round(s.recording.size/1024))} KB</p><audio controls preload="none" src="/api/recordings/${s.id}"></audio><button class="small-button" data-delete-recording="${s.id}">Delete recording</button></div>`:''}<div class="session-edit-form" data-session-form="${s.id}" hidden><label>Start <input type="datetime-local" data-session-start required value="${localDateTimeValue(startedAt)}" /></label><label>End <input type="datetime-local" data-session-end required value="${localDateTimeValue(endedAt)}" /></label><label>Credited active minutes <input type="number" min="0" step="0.1" data-session-active required value="${(Math.max(0,s.creditedMs)/60_000).toFixed(1)}" /></label><label>Reason <input type="text" data-session-reason required placeholder="Why are you correcting this?" /></label><button class="small-button" type="button" data-save-session="${s.id}">Save correction</button></div><ul>${timeline || '<li>No detector transitions recorded.</li>'}</ul>${s.correctionMs ? `<small>Manual adjustment: ${s.correctionMs>0?'+':'−'}${time(Math.abs(s.correctionMs))} · ${escapeHtml(s.correctionReason || '')}</small>` : ''}</details>`;
   }).join('') || '<p class="muted">No sessions to review.</p>';
 }
 
 function fillSettings(c) {
   $('#goal-input').value = c.goalMinutes;
   $('#threshold-input').value = c.inactivitySeconds;
+  $('#recording-enabled').checked = Boolean(c.recordingEnabled);
   $('#daily-points').value = c.pointRules.dailyGoal;
   $('#lesson-points').value = c.pointRules.lesson;
   $('#practice-points').value = c.pointRules.practiceDay;
@@ -196,6 +197,18 @@ async function startAudio() {
       return;
     }
     audio = { stream, context, source: null, node: null, mute: null };
+    const childConfig = child();
+    if (childConfig.recordingEnabled && typeof MediaRecorder !== 'undefined') {
+      const preferred = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/mp4;codecs=mp4a.40.2'].find((type) => MediaRecorder.isTypeSupported?.(type));
+      try {
+        const recorder = preferred ? new MediaRecorder(stream, { mimeType: preferred }) : new MediaRecorder(stream);
+        const chunks = [];
+        recorder.addEventListener('dataavailable', (event) => { if (event.data?.size) chunks.push(event.data); });
+        recorder.start(1000);
+        audio.recorder = recorder;
+        audio.recordingChunks = chunks;
+      } catch { showToast('Microphone timer is running; recording could not start.'); }
+    } else if (childConfig.recordingEnabled) showToast('This browser can track practice but cannot record audio.');
     await resumePromise;
     await context.audioWorklet.addModule('/audio/piano-worklet.js');
     const source = context.createMediaStreamSource(stream);
@@ -245,12 +258,19 @@ function loseMic() {
 
 function stopAudio() {
   if (ticker) clearInterval(ticker); ticker = null;
+  const currentAudio = audio;
+  const recording = currentAudio?.recorder ? new Promise((resolve) => {
+    const recorder = currentAudio.recorder;
+    recorder.addEventListener('stop', () => resolve(new Blob(currentAudio.recordingChunks, { type: recorder.mimeType || 'application/octet-stream' })), { once: true });
+    try { if (recorder.state !== 'inactive') recorder.stop(); else resolve(new Blob(currentAudio.recordingChunks, { type: recorder.mimeType || 'application/octet-stream' })); } catch { resolve(null); }
+  }) : Promise.resolve(null);
   if (audio?.node) audio.node.disconnect();
   if (audio?.mute) audio.mute.disconnect();
   if (audio?.source) audio.source.disconnect();
   if (audio?.stream) audio.stream.getTracks().forEach((track) => track.stop());
   if (audio?.context) audio.context.close().catch(()=>{});
   audio = null;
+  return recording;
 }
 
 function finishPractice() {
@@ -262,9 +282,19 @@ function finishPractice() {
   state.sessions.push(session); state.currentSession = null;
   settlePracticeDay(state, session.childId, session.date);
   $('#permission-message').hidden = true;
-  timer = null; startIso = null; microphoneStatus = 'idle'; stopAudio(); persist();
+  timer = null; startIso = null; microphoneStatus = 'idle';
+  const recordingPromise = stopAudio(); persist();
   const earned=points.ledgerBalance(state.ledger,session.childId)-before;
   if(earned>0) showToast(`Lovely practice! +${earned} points earned${[3,5,7,14,30].includes(currentStreak(state,childFor(session.childId)))?' · streak badge unlocked':''}`);
+  recordingPromise.then(async (blob) => {
+    if (!blob?.size) return;
+    try {
+      const response = await fetch(`/api/recordings/${session.id}`, { method: 'PUT', headers: { 'Content-Type': blob.type || 'application/octet-stream' }, body: blob });
+      if (!response.ok) throw new Error('Upload failed');
+      session.recording = { mimeType: blob.type, size: blob.size, createdAt: new Date().toISOString() };
+      persist(); showToast('Private recording saved for parent review.');
+    } catch { showToast('Practice saved; recording could not sync.'); }
+  });
 }
 
 function bindEvents() {
@@ -291,6 +321,7 @@ function bindEvents() {
     c.pointRules.dailyGoal=Math.max(0,Number($('#daily-points').value)||0); c.pointRules.lesson=Math.max(0,Number($('#lesson-points').value)||0); c.pointRules.practiceDay=Math.max(0,Number($('#practice-points').value)||0);
     c.pointRules.extraEveryMinutes=Math.max(1,Number($('#extra-step').value)||10); c.pointRules.extraMinutes=Math.max(0,Number($('#extra-points').value)||0);
     c.pointRules.milestones={3:Number($('#milestone-3').value)||0,5:Number($('#milestone-5').value)||0,7:Number($('#milestone-7').value)||0,14:Number($('#milestone-14').value)||0,30:Number($('#milestone-30').value)||0};
+    c.recordingEnabled = $('#recording-enabled').checked;
     c.requiredWeekdays=[...document.querySelectorAll('.weekday-check:checked')].map((input)=>Number(input.value));
     recalculateChildAwards(state,c.id);
     persist();
@@ -374,6 +405,11 @@ function bindEvents() {
     }
     const review=event.target.closest('[data-review-session]');
     if(review){ const session=state.sessions.find((s)=>s.id===review.dataset.reviewSession); session.status='complete'; settlePracticeDay(state,session.childId,session.date); reconcilePracticeDay(state,session.childId,session.date,crypto.randomUUID()); persist(); showToast('Verified practice time approved'); }
+    const deleteRecording=event.target.closest('[data-delete-recording]');
+    if(deleteRecording){
+      const session=state.sessions.find((s)=>s.id===deleteRecording.dataset.deleteRecording);
+      if(session?.recording && confirm('Delete this private recording?')) fetch(`/api/recordings/${session.id}`,{method:'DELETE'}).then((response)=>{if(!response.ok)throw new Error();delete session.recording;persist();showToast('Recording deleted.');}).catch(()=>showToast('Recording could not be deleted.'));
+    }
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && state.currentSession) loseMic();

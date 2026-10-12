@@ -7,14 +7,14 @@ Private, mobile-first piano practice tracker for a family. The project is an ear
 | Area | Now | Before relying on it |
 | --- | --- | --- |
 | Practice data | Stored in this browser's `localStorage` | Connect authenticated Worker APIs to D1 |
-| Audio | Processed on-device; no recording is saved | Validate the classifier with the family's pianos and ordinary household audio |
+| Audio | Processed on-device; parent may opt in to private session recordings stored in R2 | Validate the classifier with the family's pianos and ordinary household audio |
 | Points | Deterministic local ledger prototype | Move awards and redemptions to transactional server logic |
 | Access | Cloudflare Access gates the preview for the parent's account | Add authenticated API roles before relying on any shared family data |
-| Cloudflare | Worker preview and D1 schema are provisioned; app state is still local to each browser | Connect authenticated API routes to D1 before using across devices |
+| Cloudflare | Worker preview and D1 schema are provisioned; app state is still local to each browser | Recording data is separately stored in a private R2 bucket |
 
 The audio classifier is an experimental signal-feature heuristic. It can mistake recorded piano, other pitched instruments, or some background audio for live piano. See [Testing](docs/TESTING.md) before trusting credited time or rewards.
 
-The preview currently saves data only in the browser that created it. D1 is provisioned but not connected to the app yet; this preview is for evaluation, not authoritative family records.
+Family settings and practice history sync through D1. Opt-in recordings are stored privately in R2 and are available only to the Access-authenticated parent for playback or deletion. Recordings are never published or sent to a third-party model.
 
 ## Run and verify
 

@@ -10,5 +10,8 @@
       "database_id": "7a90312a-3dbd-4aed-ade5-a5a4d45f60f7",
       "migrations_dir": "./migrations"
     }
+  ],
+  "r2_buckets": [
+    { "binding": "RECORDINGS", "bucket_name": "piano-punch-recordings" }
   ]
 }
