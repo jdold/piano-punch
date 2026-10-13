@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, settlePracticeDay, reconcilePracticeDay } from '../src/lib/piano-state.js';
+import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay } from '../src/lib/piano-state.js';
 
 test('family profile names survive a saved-state reload', () => {
   const values = new Map();
@@ -23,6 +23,15 @@ test('legacy two-child cloud state gains Emma and instrument defaults once', () 
     ['Gordon', 'digital_keyboard'], ['Caroline', 'acoustic_piano'], ['Emma', 'cello'],
   ]);
   assert.equal(ensureFamilyProfiles(state), false);
+});
+
+test('kid profile migration repairs old settings without adding unsaved profiles', () => {
+  const state = initialState();
+  state.children = state.children.slice(0, 2);
+  state.children.forEach((child) => { delete child.detector; delete child.instrumentType; });
+  ensureKidProfiles(state);
+  assert.deepEqual(state.children.map((child) => child.instrumentType), ['digital_keyboard', 'acoustic_piano']);
+  assert.equal(state.children.length, 2);
 });
 
 test('live verified goal time awards daily points once before punch-out', () => {

@@ -1,7 +1,7 @@
 import { SmartTimer, TIMER_STATES } from './smart-timer.js';
 import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
-import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, ensureFamilyProfiles } from './piano-state.js';
+import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, ensureFamilyProfiles, ensureKidProfiles } from './piano-state.js';
 
 let state = loadState();
 const kidMode = location.pathname === '/kids' || location.pathname === '/kids/';
@@ -90,6 +90,7 @@ async function hydrateKidState() {
   const remote = await response.json();
   if (!remote.state?.children?.length) throw new Error('Family profiles are not set up yet. Ask a parent to open Parent Controls.');
   state = remote.state;
+  ensureKidProfiles(state);
   cloudRevision = remote.revision || 0;
   cloudReady = true;
   saveState(state);

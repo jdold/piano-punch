@@ -51,6 +51,15 @@ export function ensureFamilyProfiles(state) {
   return changed;
 }
 
+// Kid pages can repair fields on existing profiles, but must not introduce
+// profiles locally that the server has not saved yet.
+export function ensureKidProfiles(state) {
+  const existingIds = new Set(state.children.map((child) => child.id));
+  const changed = ensureFamilyProfiles(state);
+  state.children = state.children.filter((child) => existingIds.has(child.id));
+  return changed;
+}
+
 export function loadState(storage = globalThis.localStorage) {
   try {
     const saved = JSON.parse(storage?.getItem(STORAGE_KEY) || 'null');
