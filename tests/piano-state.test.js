@@ -14,6 +14,19 @@ test('family profile names survive a saved-state reload', () => {
   assert.deepEqual(restored.children.map((child) => child.name), ['Gordon', 'Caroline', 'Emma']);
 });
 
+test('each child gets a distinct default theme and custom choices survive migration', () => {
+  const state = initialState();
+  assert.deepEqual(state.children.map(({ id, theme }) => [id, theme]), [
+    ['son', 'orange'], ['daughter', 'yellow'], ['emma', 'blue'],
+  ]);
+
+  state.children[0].theme = 'purple';
+  state.children[1].theme = 'not-a-theme';
+  assert.equal(ensureFamilyProfiles(state), true);
+  assert.deepEqual(state.children.map((child) => child.theme), ['purple', 'yellow', 'blue']);
+  assert.equal(ensureFamilyProfiles(state), false);
+});
+
 test('legacy two-child cloud state gains Emma and instrument defaults once', () => {
   const state = initialState();
   state.children = state.children.slice(0, 2);

@@ -134,6 +134,13 @@ async function kidApi(request, env, url) {
     const proposed = input.state;
     const ids = new Set(current.children.map((child) => child.id));
     if (!Array.isArray(proposed.sessions) || !Array.isArray(proposed.redemptions) || !Array.isArray(proposed.children) || proposed.children.map((c) => c.id).sort().join('|') !== [...ids].sort().join('|')) return json({ error: 'Invalid family update.' }, 400);
+    const allowedThemes = new Set(['orange', 'blue', 'yellow', 'green', 'purple', 'pink']);
+    const proposedChildren = new Map(proposed.children.map((child) => [child.id, child]));
+    const nextChildren = current.children.map((child) => {
+      const requestedTheme = proposedChildren.get(child.id)?.theme || child.theme || (child.id === 'son' ? 'orange' : child.id === 'emma' ? 'blue' : child.id === 'daughter' ? 'yellow' : 'green');
+      return allowedThemes.has(requestedTheme) ? { ...child, theme: requestedTheme } : null;
+    });
+    if (nextChildren.some((child) => !child)) return json({ error: 'Invalid profile color.' }, 400);
     const existingSessions = new Map(current.sessions.map((session) => [session.id, session]));
     const nextSessions = [...current.sessions];
     for (const session of proposed.sessions) {
@@ -161,7 +168,7 @@ async function kidApi(request, env, url) {
       if (!ended) return json({ error: 'The active session must be punched out before it can be closed.' }, 409);
       nextCurrent = null;
     }
-    const candidateLedger = addKidPracticeAwards({ ...current, sessions: nextSessions, currentSession: nextCurrent });
+    const candidateLedger = addKidPracticeAwards({ ...current, children: nextChildren, sessions: nextSessions, currentSession: nextCurrent });
     let nextRedemptions = [...current.redemptions];
     const oldRequests = new Map(current.redemptions.map((item) => [item.id, item]));
     for (const request of proposed.redemptions) {
@@ -177,7 +184,7 @@ async function kidApi(request, env, url) {
       if (balance - reserved < request.cost) return json({ error: 'Not enough available points.' }, 400);
       nextRedemptions.push(request);
     }
-    const updated = { ...current, sessions: nextSessions, currentSession: nextCurrent, redemptions: nextRedemptions, ledger: candidateLedger, parentMode: false };
+    const updated = { ...current, children: nextChildren, sessions: nextSessions, currentSession: nextCurrent, redemptions: nextRedemptions, ledger: candidateLedger, parentMode: false };
     const result = await env.DB.prepare(`UPDATE app_state SET state_json = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1 AND revision = ? RETURNING revision`).bind(JSON.stringify(updated), row.revision).first();
     if (!result) return json({ error: 'Family data changed. Refresh to continue.' }, 409);
     return json({ state: { ...updated, currentSession: null }, revision: result.revision });

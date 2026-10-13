@@ -1,7 +1,7 @@
 import { SmartTimer, TIMER_STATES } from './smart-timer.js';
 import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
-import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, ensureFamilyProfiles, ensureKidProfiles } from './piano-state.js';
+import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles } from './piano-state.js';
 
 let state = loadState();
 const kidMode = location.pathname === '/kids' || location.pathname === '/kids/';
@@ -101,6 +101,7 @@ function activeInfo() { return timer?.snapshot(performance.now() - clockBase) ||
 
 function render() {
   const c = child();
+  document.body.dataset.theme = PROFILE_THEMES[c.theme] ? c.theme : 'green';
   const today = dayKey();
   const activeMinutes = creditedMinutesForDay(state, c.id, today);
   const goal = c.goalMinutes;
@@ -108,6 +109,8 @@ function render() {
   const current = activeInfo();
   $('#child-picker').innerHTML = state.children.map((item) => `<button class="child-chip ${item.id === selectedChild ? 'selected' : ''}" data-child="${item.id}">${escapeHtml(item.name)}</button>`).join('');
   $('#child-label').textContent = c.name;
+  $('#theme-toggle').setAttribute('aria-label', `Change colors for ${c.name}`);
+  $('#theme-picker').querySelectorAll('[data-profile-theme]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.profileTheme === c.theme)));
   $('#goal-label').textContent = `${activeMinutes} / ${goal} min today`;
   $('#goal-ring').style.setProperty('--progress', `${percent}%`);
   $('#goal-ring-value').textContent = `${percent}%`;
@@ -539,10 +542,26 @@ function finishPractice() {
 }
 
 function bindEvents() {
+  $('#theme-picker').innerHTML = Object.entries(PROFILE_THEMES).map(([id, theme]) => `<button type="button" class="theme-option" data-profile-theme="${id}" aria-pressed="false"><i aria-hidden="true"></i><span>${theme.label}</span></button>`).join('');
   $('#child-picker').addEventListener('click', (event) => {
     const button = event.target.closest('[data-child]'); if (!button || state.currentSession) return;
     stopCalibration();
-    selectedChild = button.dataset.child; persist();
+    selectedChild = button.dataset.child;
+    $('#theme-picker').hidden = true;
+    $('#theme-toggle').setAttribute('aria-expanded', 'false');
+    persist();
+  });
+  $('#theme-toggle').addEventListener('click', () => {
+    const picker = $('#theme-picker');
+    picker.hidden = !picker.hidden;
+    $('#theme-toggle').setAttribute('aria-expanded', String(!picker.hidden));
+    if (!picker.hidden) $('#theme-picker [data-profile-theme]')?.focus();
+  });
+  $('#theme-picker').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-profile-theme]');
+    if (!button || !PROFILE_THEMES[button.dataset.profileTheme]) return;
+    child().theme = button.dataset.profileTheme;
+    persist();
   });
   $('#punch-in').addEventListener('click', beginPractice);
   $('#punch-out').addEventListener('click', finishPractice);
@@ -703,6 +722,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       const button = event.target.closest('[data-kid-profile]'); if (!button) return;
       selectedChild = button.dataset.kidProfile;
       $('#child-welcome').hidden = true;
+      $('#theme-picker').hidden = true;
+      $('#theme-toggle').setAttribute('aria-expanded', 'false');
       queueCloudSync();
       render();
     });

@@ -2,6 +2,19 @@ import { DEFAULT_RULES, evaluateDay, reconcileDayAwards, addAward, addAdjustment
 
 export const STORAGE_KEY = 'piano-punch:v1';
 
+export const PROFILE_THEMES = {
+  orange: { label: 'Orange', symbol: '●' },
+  blue: { label: 'Blue', symbol: '●' },
+  yellow: { label: 'Yellow', symbol: '●' },
+  green: { label: 'Green', symbol: '●' },
+  purple: { label: 'Purple', symbol: '●' },
+  pink: { label: 'Pink', symbol: '●' },
+};
+
+function defaultProfileTheme(id) {
+  return id === 'son' ? 'orange' : id === 'emma' ? 'blue' : id === 'daughter' ? 'yellow' : 'green';
+}
+
 export const INSTRUMENT_PRESETS = {
   acoustic_piano: { label: 'Acoustic piano', detector: { minVolume: 0.003, minFrequencyHz: 55, maxFrequencyHz: 1400, minHarmonicity: 0.25, confidence: 0.72 } },
   digital_keyboard: { label: 'Digital keyboard', detector: { minVolume: 0.0025, minFrequencyHz: 55, maxFrequencyHz: 1500, minHarmonicity: 0.23, confidence: 0.70 } },
@@ -10,7 +23,7 @@ export const INSTRUMENT_PRESETS = {
 };
 
 function childProfile(id, name, instrumentType) {
-  return { id, name, goalMinutes: 20, inactivitySeconds: 20, requiredWeekdays: [1, 2, 3, 4, 5, 6], excusedDates: [], pointRules: structuredClone(DEFAULT_RULES), instrumentType, detector: structuredClone(INSTRUMENT_PRESETS[instrumentType].detector) };
+  return { id, name, theme: defaultProfileTheme(id), goalMinutes: 20, inactivitySeconds: 20, requiredWeekdays: [1, 2, 3, 4, 5, 6], excusedDates: [], pointRules: structuredClone(DEFAULT_RULES), instrumentType, detector: structuredClone(INSTRUMENT_PRESETS[instrumentType].detector) };
 }
 
 export function initialState() {
@@ -47,6 +60,7 @@ export function ensureFamilyProfiles(state) {
     if (!child.detector) { child.detector = structuredClone(INSTRUMENT_PRESETS[child.instrumentType].detector); changed = true; }
     if (!child.excusedDates) { child.excusedDates = []; changed = true; }
     if (!child.pointRules) { child.pointRules = structuredClone(DEFAULT_RULES); changed = true; }
+    if (!PROFILE_THEMES[child.theme]) { child.theme = defaultProfileTheme(child.id); changed = true; }
   }
   return changed;
 }

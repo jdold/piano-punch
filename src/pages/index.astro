@@ -32,10 +32,11 @@ const title = 'Piano Punch';
       </section>
 
       <section class="child-row" aria-label="Choose a child">
-        <div><p class="eyebrow">PLAYING TODAY</p><h2 id="child-label">Son</h2></div>
+        <div class="child-identity"><div><p class="eyebrow">PLAYING TODAY</p><h2 id="child-label">Son</h2></div><button id="theme-toggle" class="theme-toggle" type="button" aria-label="Change profile colors" aria-expanded="false" aria-controls="theme-picker" title="Change colors">◒</button></div>
         <div id="child-picker" class="child-picker"></div>
         <button id="rename-child" class="icon-button" type="button" aria-label="Rename selected child" title="Rename">✎</button>
       </section>
+      <div id="theme-picker" class="theme-picker" role="group" aria-label="Choose profile colors" hidden></div>
 
       <section class="practice-card" aria-labelledby="practice-heading">
         <div class="practice-top">
