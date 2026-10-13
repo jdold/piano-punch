@@ -89,7 +89,7 @@ async function api(request, env) {
     let input;
     try { input = await request.json(); } catch { return json({ error: 'Invalid JSON.' }, 400); }
     const s = input?.state;
-    if (!s || !Array.isArray(s.children) || s.children.length !== 2 || !Array.isArray(s.sessions) || !Array.isArray(s.ledger) || !Array.isArray(s.rewards) || !Array.isArray(s.redemptions) || !Number.isInteger(input.revision) || input.revision < 0) return json({ error: 'Invalid family state.' }, 400);
+    if (!s || !Array.isArray(s.children) || s.children.length < 1 || s.children.length > 8 || s.children.some((child) => !child?.id || typeof child.id !== 'string') || new Set(s.children.map((child) => child.id)).size !== s.children.length || !Array.isArray(s.sessions) || !Array.isArray(s.ledger) || !Array.isArray(s.rewards) || !Array.isArray(s.redemptions) || !Number.isInteger(input.revision) || input.revision < 0) return json({ error: 'Invalid family state.' }, 400);
     const serialized = JSON.stringify(s);
     const result = await env.DB.prepare(`INSERT INTO app_state (id, state_json, revision) VALUES (1, ?, 1)
       ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, revision = app_state.revision + 1, updated_at = CURRENT_TIMESTAMP

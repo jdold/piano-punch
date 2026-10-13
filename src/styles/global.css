@@ -9,3 +9,13 @@
 .recording-audit p { margin: 0; font-size: 12px; color: #758078; }
 .recording-audit audio { width: 100%; max-width: 420px; }
 .screen-status { min-height: 1em; margin: 6px 0; color: #718078; font-size: 12px; }
+.detector-admin .muted { margin: -3px 0 12px; }
+.detector-select { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #6e7c73; font-size: 11px; margin-bottom: 10px; }
+.detector-select select { max-width: 60%; border: 1px solid #e6e5dc; background: #fffefa; border-radius: 7px; padding: 7px; font: inherit; color: #42564a; }
+.range-setting { display: grid; grid-template-columns: 1fr auto; gap: 3px 10px; align-items: center; color: #6e7c73; font-size: 10px; margin: 10px 0; }
+.range-setting span { color: #3e6e53; font-variant-numeric: tabular-nums; font-weight: 700; }
+.range-setting input[type="range"] { grid-column: 1 / -1; width: 100%; accent-color: #47765e; }
+.detector-test { display: grid; justify-items: start; gap: 8px; margin-top: 12px; border-top: 1px solid #eeece4; padding-top: 12px; }
+.detector-test strong { font-size: 11px; color: #69766e; }
+.detector-test strong[data-detected="true"] { color: #397446; }
+.detector-test small,.detector-test p { margin: 0; color: #8b948c; font-size: 9px; line-height: 1.5; }

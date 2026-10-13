@@ -1,7 +1,7 @@
 import { SmartTimer, TIMER_STATES } from './smart-timer.js';
 import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
-import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, points } from './piano-state.js';
+import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, points, INSTRUMENT_PRESETS, ensureFamilyProfiles } from './piano-state.js';
 
 let state = loadState();
 let selectedChild = state.children[0].id;
@@ -14,6 +14,8 @@ let startIso = null;
 let microphoneStatus = 'idle';
 let wakeLock = null;
 let wakeLockStatus = 'inactive';
+let calibrationAudio = null;
+let calibrationGate = null;
 let cloudRevision = 0;
 let cloudReady = false;
 let cloudConflict = false;
@@ -52,15 +54,18 @@ async function hydrateCloudState() {
     cloudRevision = remote.revision || 0;
     if (remote.state) {
       state = remote.state;
-      saveState(state);
     } else {
       const local = JSON.parse(localStorage.getItem('piano-punch:v1') || 'null');
       if (local?.children?.length) state = { ...state, ...local };
     }
+    const migrated = ensureFamilyProfiles(state);
+    saveState(state);
     cloudReady = true;
     $('#cloud-status').textContent = remote.state ? 'Synced' : 'Saving…';
-    if (!remote.state) queueCloudSync();
+    if (!remote.state || migrated) queueCloudSync();
   } catch {
+    ensureFamilyProfiles(state);
+    saveState(state);
     $('#cloud-status').textContent = 'Offline — saved here';
   }
 }
@@ -113,7 +118,7 @@ function render() {
   $('#parent-dashboard').hidden = !state.parentMode;
   if (state.parentMode) {
     renderParent();
-    if (document.activeElement?.tagName !== 'INPUT') fillSettings(c);
+    if (!['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) fillSettings(c);
   }
   $('#pending-count').textContent = state.redemptions.filter((x) => x.status === 'pending').length;
   const ringProgress = Math.min(100, current.activeMs / Math.max(1, c.goalMinutes * 60_000) * 100);
@@ -127,7 +132,7 @@ function stateLabel(value) {
 function renderParent() {
   $('#parent-children').innerHTML = state.children.map((c) => {
     const date = dayKey(); const mins = creditedMinutesForDay(state,c.id,date);
-    return `<article class="child-admin"><div><strong>${escapeHtml(c.name)}</strong><small>Today · ${mins} of ${c.goalMinutes} min · ${currentStreak(state,c)} day streak · ${points.ledgerBalance(state.ledger,c.id)} available points</small></div><button data-lesson="${c.id}" class="small-button">Confirm lesson</button></article>`;
+    return `<article class="child-admin"><div><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(INSTRUMENT_PRESETS[c.instrumentType]?.label || 'Instrument')} · Today ${mins}/${c.goalMinutes} min · ${currentStreak(state,c)} day streak · ${points.ledgerBalance(state.ledger,c.id)} points</small></div><button data-lesson="${c.id}" class="small-button">Confirm lesson</button></article>`;
   }).join('');
   $('#redemption-list').innerHTML = state.redemptions.filter((x) => x.status === 'pending').map((r) => {
     const c = state.children.find((it) => it.id === r.childId); const reward = state.rewards.find((it) => it.id === r.rewardId);
@@ -156,10 +161,105 @@ function fillSettings(c) {
   $('#extra-points').value = c.pointRules.extraMinutes;
   for (const day of [3,5,7,14,30]) $(`#milestone-${day}`).value = c.pointRules.milestones[day] ?? 0;
   document.querySelectorAll('.weekday-check').forEach((input) => { input.checked = c.requiredWeekdays.includes(Number(input.value)); });
+  fillDetectorSettings(c);
+}
+
+function fillDetectorSettings(c, usePreset = false) {
+  if (usePreset) c.detector = structuredClone(INSTRUMENT_PRESETS[c.instrumentType].detector);
+  const detector = c.detector || INSTRUMENT_PRESETS[child().instrumentType].detector;
+  $('#instrument-input').value = c.instrumentType;
+  $('#mic-volume').value = detector.minVolume;
+  $('#pitch-low').value = detector.minFrequencyHz;
+  $('#pitch-high').value = detector.maxFrequencyHz;
+  $('#harmonicity').value = detector.minHarmonicity;
+  $('#confidence').value = detector.confidence;
+  updateDetectorReadouts();
+}
+
+function readDetectorControls() {
+  const c = child();
+  c.instrumentType = $('#instrument-input').value;
+  c.detector = {
+    minVolume: Number($('#mic-volume').value),
+    minFrequencyHz: Number($('#pitch-low').value),
+    maxFrequencyHz: Number($('#pitch-high').value),
+    minHarmonicity: Number($('#harmonicity').value),
+    confidence: Number($('#confidence').value),
+  };
+  updateDetectorReadouts();
+}
+
+function updateDetectorReadouts() {
+  $('#mic-volume-value').textContent = Number($('#mic-volume').value).toFixed(4);
+  $('#pitch-low-value').textContent = `${$('#pitch-low').value} Hz`;
+  $('#pitch-high-value').textContent = `${$('#pitch-high').value} Hz`;
+  $('#harmonicity-value').textContent = Number($('#harmonicity').value).toFixed(2);
+  $('#confidence-value').textContent = Number($('#confidence').value).toFixed(2);
+}
+
+async function startCalibration() {
+  if (state.currentSession) { showToast('Finish the practice session before testing the microphone.'); return; }
+  if (calibrationAudio) { stopCalibration(); return; }
+  const button = $('#detector-test-toggle');
+  const status = $('#detector-test-state');
+  button.disabled = true; status.textContent = 'Starting microphone…';
+  let stream = null; let context = null;
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone is unavailable in this browser.');
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx || !('AudioWorkletNode' in window)) throw new Error('This browser cannot run the live audio test.');
+    context = new AudioCtx();
+    const resumePromise = context.state === 'suspended' ? context.resume() : Promise.resolve();
+    resumePromise.catch(() => {});
+    stream = await requestMicrophone((constraints) => navigator.mediaDevices.getUserMedia(constraints));
+    await resumePromise;
+    await context.audioWorklet.addModule('/audio/piano-worklet.js');
+    const source = context.createMediaStreamSource(stream);
+    const node = new AudioWorkletNode(context, 'piano-input', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    const mute = context.createGain(); mute.gain.value = 0;
+    source.connect(node); node.connect(mute); mute.connect(context.destination);
+    calibrationAudio = { stream, context, source, node, mute };
+    calibrationGate = new PianoEvidenceGate({ minConfidence: child().detector.confidence });
+    node.port.onmessage = (event) => {
+      if (event.data?.type !== 'frame' || !calibrationAudio) return;
+      const settings = child().detector;
+      calibrationGate.minConfidence = settings.confidence;
+      const features = analyzePianoFrame(new Float32Array(event.data.samples), event.data.sampleRate, settings);
+      const result = calibrationGate.push(features, performance.now());
+      status.textContent = result === 'playing' ? 'Instrument-like signal detected' : 'No instrument-like signal detected';
+      status.dataset.detected = String(result === 'playing');
+      $('#detector-test-metrics').textContent = `Input ${features.rms.toFixed(4)} · confidence ${features.score.toFixed(2)} · ${features.fundamentalHz ? `${Math.round(features.fundamentalHz)} Hz` : 'no stable pitch'}`;
+    };
+    button.disabled = false; button.textContent = 'Stop live test';
+    status.textContent = 'Listening — speak or play, then adjust controls';
+  } catch (error) {
+    stream?.getTracks().forEach((track) => track.stop());
+    if (context) context.close().catch(() => {});
+    calibrationAudio = null; calibrationGate = null;
+    status.dataset.detected = 'false';
+    status.textContent = microphoneErrorMessage(error);
+    button.disabled = false; button.textContent = 'Start live test';
+  }
+}
+
+function stopCalibration() {
+  const current = calibrationAudio;
+  calibrationAudio = null; calibrationGate = null;
+  if (current?.node) current.node.disconnect();
+  if (current?.mute) current.mute.disconnect();
+  if (current?.source) current.source.disconnect();
+  current?.stream?.getTracks().forEach((track) => track.stop());
+  if (current?.context) current.context.close().catch(() => {});
+  const button = $('#detector-test-toggle');
+  const status = $('#detector-test-state');
+  if (button) { button.disabled = false; button.textContent = 'Start live test'; }
+  if (status) { status.textContent = 'Test stopped'; status.dataset.detected = 'false'; }
+  if ($('#detector-test-metrics')) $('#detector-test-metrics').textContent = '';
 }
 
 async function beginPractice() {
   if (state.currentSession) return;
+  stopCalibration();
   clockBase = performance.now(); startIso = new Date().toISOString(); microphoneStatus = 'starting';
   timer = new SmartTimer({ thresholdMs: child().inactivitySeconds * 1000, nowMs: 0 });
   timer.punchIn(0);
@@ -242,12 +342,14 @@ async function startAudio() {
     const node = new AudioWorkletNode(context, 'piano-input', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
     const mute = context.createGain(); mute.gain.value = 0;
     audio.source = source; audio.node = node; audio.mute = mute;
-    const gate = new PianoEvidenceGate();
+    const gate = new PianoEvidenceGate({ minConfidence: child().detector.confidence });
     node.port.onmessage = (event) => {
       if (event.data?.type !== 'frame' || !timer || !state.currentSession) return;
       lastAudioFrameAt=performance.now();
       if (microphoneStatus === 'starting') microphoneStatus = 'listening';
-      const features = analyzePianoFrame(new Float32Array(event.data.samples), event.data.sampleRate);
+      const detectorSettings = child().detector;
+      gate.minConfidence = detectorSettings.confidence;
+      const features = analyzePianoFrame(new Float32Array(event.data.samples), event.data.sampleRate, detectorSettings);
       const classValue = gate.push(features, performance.now() - clockBase);
       const priorEvents = timer.events.length;
       timer.update(classValue, performance.now() - clockBase);
@@ -327,11 +429,15 @@ function finishPractice() {
 function bindEvents() {
   $('#child-picker').addEventListener('click', (event) => {
     const button = event.target.closest('[data-child]'); if (!button || state.currentSession) return;
+    stopCalibration();
     selectedChild = button.dataset.child; persist();
   });
   $('#punch-in').addEventListener('click', beginPractice);
   $('#punch-out').addEventListener('click', finishPractice);
   $('#retry-audio').addEventListener('click', startAudio);
+  $('#detector-test-toggle').addEventListener('click', startCalibration);
+  $('#instrument-input').addEventListener('change', () => { fillDetectorSettings(child(), true); persist(); });
+  document.querySelectorAll('#mic-volume, #pitch-low, #pitch-high, #harmonicity, #confidence').forEach((input) => input.addEventListener('input', () => { readDetectorControls(); persist(); }));
   $('#parent-toggle').addEventListener('click', () => {
     state.parentMode = !state.parentMode;
     $('#parent-toggle').setAttribute('aria-expanded', String(state.parentMode));
@@ -439,13 +545,14 @@ function bindEvents() {
     }
   });
   document.addEventListener('visibilitychange', () => {
+    if (document.hidden && calibrationAudio) stopCalibration();
     if (document.hidden && state.currentSession) loseMic();
     else if (!document.hidden && state.currentSession) {
       requestScreenWakeLock();
       if (audio?.context?.state === 'suspended') audio.context.resume().catch(() => loseMic());
     }
   });
-  window.addEventListener('pagehide', () => { releaseScreenWakeLock(); if (state.currentSession) { state.currentSession.recoveryRequired = true; saveState(state); stopAudio(); } });
+  window.addEventListener('pagehide', () => { stopCalibration(); releaseScreenWakeLock(); if (state.currentSession) { state.currentSession.recoveryRequired = true; saveState(state); stopAudio(); } });
   if (state.currentSession) {
     const interrupted=state.currentSession;
     state.sessions.push({ ...interrupted, endedAt: new Date().toISOString(), status: 'interrupted', correctionMs: 0, events: interrupted.events || [] });
@@ -460,6 +567,8 @@ function resetRewardForm() { $('#reward-form').reset(); $('#reward-id').value=''
 function showToast(text) { const el=$('#toast'); el.textContent=text; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),2300); }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  ensureFamilyProfiles(state);
+  saveState(state);
   await hydrateCloudState();
   bindEvents();
   fillSettings(child());

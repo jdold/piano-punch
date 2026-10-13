@@ -28,7 +28,13 @@ function fft(real, imag) {
   }
 }
 
-export function analyzePianoFrame(samples, sampleRate, noiseFloor = 0.002) {
+export function analyzePianoFrame(samples, sampleRate, settings = {}) {
+  const {
+    minVolume = 0.003,
+    minFrequencyHz = 55,
+    maxFrequencyHz = 1200,
+    minHarmonicity = 0.25,
+  } = settings;
   const n = samples.length;
   if (!n || !sampleRate) return { reliable: false, score: 0, rms: 0 };
   const real = new Float64Array(n), imag = new Float64Array(n);
@@ -40,7 +46,7 @@ export function analyzePianoFrame(samples, sampleRate, noiseFloor = 0.002) {
     real[i] = value * (0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (n - 1)));
   }
   const rms = Math.sqrt(squares / n);
-  if (rms < Math.max(noiseFloor, 0.003)) return { reliable: true, score: 0, rms, pitched: false, onset: false };
+  if (rms < minVolume) return { reliable: true, score: 0, rms, pitched: false, onset: false };
   fft(real, imag);
   const mags = new Float32Array(n / 2);
   let total = 0, geometric = 0, arithmetic = 0, peakCount = 0;
@@ -54,8 +60,9 @@ export function analyzePianoFrame(samples, sampleRate, noiseFloor = 0.002) {
   }
   const flatness = Math.exp(geometric / (mags.length - 3)) / (arithmetic / (mags.length - 3) + 1e-9);
   let harmonicScore = 0, fundamentalCount = 0;
-  const minBin = Math.max(2, Math.floor(55 * n / sampleRate));
-  const maxBin = Math.min(mags.length - 1, Math.floor(1200 * n / sampleRate));
+  const minBin = Math.max(2, Math.floor(minFrequencyHz * n / sampleRate));
+  const maxBin = Math.min(mags.length - 1, Math.floor(maxFrequencyHz * n / sampleRate));
+  let strongestFundamental = 0, strongestHarmonics = 0;
   for (let f = minBin; f < maxBin; f++) {
     if (mags[f] < mags[f - 1] || mags[f] < mags[f + 1]) continue;
     const base = mags[f];
@@ -65,14 +72,18 @@ export function analyzePianoFrame(samples, sampleRate, noiseFloor = 0.002) {
       const bin = Math.round(f * h);
       if (bin < mags.length && mags[bin] > base * 0.035) partials++;
     }
-    if (partials >= 2) { fundamentalCount++; harmonicScore += Math.min(1, partials / 4); }
+    if (partials >= 2) {
+      fundamentalCount++;
+      harmonicScore += Math.min(1, partials / 4);
+      if (base * partials > strongestHarmonics) { strongestHarmonics = base * partials; strongestFundamental = f * sampleRate / n; }
+    }
   }
   const harmonicity = Math.min(1, harmonicScore / Math.max(1, fundamentalCount));
-  const pitched = flatness < 0.42 && harmonicity > 0.25 && fundamentalCount > 0 && peakCount >= 3;
-  const onset = crossings > n * 0.01 && rms > noiseFloor * 2;
+  const pitched = flatness < 0.42 && harmonicity > minHarmonicity && fundamentalCount > 0 && peakCount >= 3;
+  const onset = crossings > n * 0.01 && rms > minVolume * 2;
   // Confidence requires repeated harmonic/pitched evidence; no volume-only credit.
   const score = Math.max(0, Math.min(1, 0.54 * harmonicity + 0.24 * (1 - flatness) + 0.12 * Math.min(1, peakCount / 18) + 0.1 * Number(onset)));
-  return { reliable: true, score, rms, flatness, harmonicity, fundamentalCount, peakCount, pitched, onset };
+  return { reliable: true, score, rms, flatness, harmonicity, fundamentalCount, peakCount, fundamentalHz: strongestFundamental || null, pitched, onset };
 }
 
 export class PianoEvidenceGate {

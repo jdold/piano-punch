@@ -2,11 +2,23 @@ import { DEFAULT_RULES, evaluateDay, reconcileDayAwards, addAward, addAdjustment
 
 export const STORAGE_KEY = 'piano-punch:v1';
 
+export const INSTRUMENT_PRESETS = {
+  acoustic_piano: { label: 'Acoustic piano', detector: { minVolume: 0.003, minFrequencyHz: 55, maxFrequencyHz: 1400, minHarmonicity: 0.25, confidence: 0.72 } },
+  digital_keyboard: { label: 'Digital keyboard', detector: { minVolume: 0.0025, minFrequencyHz: 55, maxFrequencyHz: 1500, minHarmonicity: 0.23, confidence: 0.70 } },
+  cello: { label: 'Cello', detector: { minVolume: 0.0025, minFrequencyHz: 60, maxFrequencyHz: 1000, minHarmonicity: 0.22, confidence: 0.68 } },
+  other: { label: 'Other instrument', detector: { minVolume: 0.003, minFrequencyHz: 55, maxFrequencyHz: 1400, minHarmonicity: 0.25, confidence: 0.72 } },
+};
+
+function childProfile(id, name, instrumentType) {
+  return { id, name, goalMinutes: 20, inactivitySeconds: 20, requiredWeekdays: [1, 2, 3, 4, 5, 6], excusedDates: [], pointRules: structuredClone(DEFAULT_RULES), instrumentType, detector: structuredClone(INSTRUMENT_PRESETS[instrumentType].detector) };
+}
+
 export function initialState() {
   return {
     children: [
-      { id: 'son', name: 'Gordon', goalMinutes: 20, inactivitySeconds: 20, requiredWeekdays: [1, 2, 3, 4, 5, 6], excusedDates: [], pointRules: structuredClone(DEFAULT_RULES) },
-      { id: 'daughter', name: 'Caroline', goalMinutes: 20, inactivitySeconds: 20, requiredWeekdays: [1, 2, 3, 4, 5, 6], excusedDates: [], pointRules: structuredClone(DEFAULT_RULES) },
+      childProfile('son', 'Gordon', 'digital_keyboard'),
+      childProfile('daughter', 'Caroline', 'acoustic_piano'),
+      childProfile('emma', 'Emma', 'cello'),
     ],
     sessions: [],
     ledger: [],
@@ -18,6 +30,25 @@ export function initialState() {
     currentSession: null,
     parentMode: false,
   };
+}
+
+export function ensureFamilyProfiles(state) {
+  let changed = false;
+  const defaults = initialState().children;
+  for (const profile of defaults) {
+    if (!state.children.some((child) => child.id === profile.id)) {
+      state.children.push(profile);
+      changed = true;
+    }
+  }
+  for (const child of state.children) {
+    const inferred = child.id === 'daughter' ? 'acoustic_piano' : child.id === 'emma' ? 'cello' : 'digital_keyboard';
+    if (!INSTRUMENT_PRESETS[child.instrumentType]) { child.instrumentType = inferred; changed = true; }
+    if (!child.detector) { child.detector = structuredClone(INSTRUMENT_PRESETS[child.instrumentType].detector); changed = true; }
+    if (!child.excusedDates) { child.excusedDates = []; changed = true; }
+    if (!child.pointRules) { child.pointRules = structuredClone(DEFAULT_RULES); changed = true; }
+  }
+  return changed;
 }
 
 export function loadState(storage = globalThis.localStorage) {
