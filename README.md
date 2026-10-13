@@ -9,16 +9,16 @@ Private, mobile-first piano practice tracker for a family. The project is an ear
 | Practice data | Synced to D1, with local recovery copy | Validate multi-device use with the family |
 | Audio | Processed on-device; parent may opt in to private session recordings stored in R2 | Validate the classifier with the family's pianos and ordinary household audio |
 | Points | Deterministic local ledger prototype | Move awards and redemptions to transactional server logic |
-| Access | Cloudflare Access gates the preview and parent API routes | Keep the Access policy restricted to the parent |
+| Access | Parent dashboard remains behind Cloudflare Access; a family-link route opens the child name picker | Treat the family link as a private bearer link |
 | Cloudflare | Worker, D1 state sync, and private R2 recording storage are deployed | Test real-device recording and retention |
 
 The audio classifier is an experimental signal-feature heuristic. It can mistake recorded piano, other pitched instruments, or some background audio for live piano. See [Testing](docs/TESTING.md) before trusting credited time or rewards.
 
-Family settings and practice history sync through D1. Opt-in recordings are stored privately in R2 and are available only to the Access-authenticated parent for playback or deletion. Recordings are never published or sent to a third-party model.
+Family settings and practice history sync through D1. Children use `/kids#<family-link-key>` to pick a profile without a login. The key is checked by the Worker; kid endpoints allow practice sync and reward requests, while parent settings and approvals remain protected. Anyone with the link can access the family practice view, so keep it private. Opt-in recordings are stored privately in R2.
 
 ## Run and verify
 
-Requirements: Node.js 22 and npm. The [private preview](https://piano-punch.jakedold07.workers.dev) is gated by Cloudflare Access for the parent account.
+Requirements: Node.js 22 and npm. The [parent dashboard](https://piano-punch.jakedold07.workers.dev) is gated by Cloudflare Access. The kids' name picker is at `/kids` and requires the private family link.
 
 ```sh
 npm ci
@@ -27,7 +27,7 @@ npm test
 npm run build
 ```
 
-`npm run dev:worker` builds the static UI into a local Worker preview. `npm run deploy` builds and deploys the Worker; it requires Wrangler authentication for the Cloudflare account. The deployed preview is restricted by Cloudflare Access to the parent email above. Keep Access enabled and previews disabled.
+`npm run dev:worker` builds the static UI into a local Worker preview. `npm run deploy` builds and deploys the Worker; it requires Wrangler authentication for the Cloudflare account. The root and parent APIs are restricted by Cloudflare Access to the parent emails in the Worker. Cloudflare Access has narrower bypass applications for the kids route and the assets/API it needs; the Worker still requires the high-entropy family key on kid APIs. Keep the key in the `KID_LINK_KEY` Worker secret, never commit it, and rotate it by replacing the secret and sharing a new `/kids#<key>` link.
 
 Microphone access requires a secure browser context (localhost is supported). Parent controls can enable recording separately for each child; recordings upload after punch-out and are playable or deletable in the session audit timeline. Clearing browser storage does not delete data already synced to D1 or R2.
 

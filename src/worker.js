@@ -52,9 +52,166 @@ function certificateSpki(der) {
   return der.slice(spki.start, spki.end);
 }
 
+function familyLinkAuthorized(request, env) {
+  const expected = env.KID_LINK_KEY;
+  const supplied = request.headers.get('X-Piano-Family-Key') || '';
+  if (!expected || expected.length !== supplied.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < expected.length; i++) mismatch |= expected.charCodeAt(i) ^ supplied.charCodeAt(i);
+  return mismatch === 0;
+}
+
+function addKidPracticeAwards(state) {
+  const autoTypes = new Set(['daily_goal', 'practice_day', 'streak_milestone', 'extra_minutes']);
+  const ledger = [...state.ledger];
+  const awards = [];
+  const expectedKeys = new Set();
+  const add = (child, points, type, date, key, note = '') => {
+    expectedKeys.add(key);
+    if (Number.isInteger(points) && points > 0 && !ledger.some((row) => row.idempotencyKey === key) && !awards.some((row) => row.idempotencyKey === key)) {
+      awards.push({ id: crypto.randomUUID(), childId: child.id, points, type, sourceId: date, idempotencyKey: key, note, createdAt: new Date().toISOString() });
+    }
+  };
+  for (const child of state.children) {
+    const totals = new Map();
+    for (const session of state.sessions) if (session.childId === child.id && session.status === 'complete') totals.set(session.date, (totals.get(session.date) || 0) + session.creditedMs);
+    if (state.currentSession?.childId === child.id) totals.set(state.currentSession.date, (totals.get(state.currentSession.date) || 0) + (state.currentSession.creditedMs || 0));
+    const goal = Math.max(1, Number(child.goalMinutes) || 20);
+    const completed = new Set([...totals].filter(([, ms]) => Math.floor(ms / 60_000) >= goal).map(([date]) => date));
+    const required = (date) => child.requiredWeekdays?.includes(new Date(`${date}T12:00:00Z`).getUTCDay()) && !child.excusedDates?.includes(date);
+    for (const [date, ms] of totals) {
+      const minutes = Math.floor(ms / 60_000);
+      if (completed.has(date)) {
+        add(child, child.pointRules?.dailyGoal, 'daily_goal', date, `daily_goal:${child.id}:${date}`);
+        add(child, child.pointRules?.practiceDay, 'practice_day', date, `practice_day:${child.id}:${date}`);
+        let streak = 0;
+        const cursor = new Date(`${date}T12:00:00Z`);
+        for (let day = 0; day < 370; day++) {
+          const key = cursor.toISOString().slice(0, 10);
+          if (required(key)) { if (!completed.has(key)) break; streak++; }
+          cursor.setUTCDate(cursor.getUTCDate() - 1);
+        }
+        for (const [milestone, value] of Object.entries(child.pointRules?.milestones || {})) {
+          if (streak === Number(milestone)) add(child, value, 'streak_milestone', date, `streak:${child.id}:${date}:${milestone}`);
+        }
+      }
+      const interval = Math.max(1, Number(child.pointRules?.extraEveryMinutes) || 10);
+      const units = Math.floor(Math.max(0, minutes - goal) / interval);
+      for (let unit = 1; unit <= units; unit++) add(child, child.pointRules?.extraMinutes, 'extra_minutes', date, `extra:${child.id}:${date}:${unit}`);
+    }
+  }
+  const result = [...ledger, ...awards];
+  for (const original of result.filter((row) => autoTypes.has(row.type) && !row.reversesLedgerId)) {
+    const reversalTotal = result.filter((row) => row.reversesLedgerId === original.id).reduce((sum, row) => sum + row.points, 0);
+    const active = original.points + reversalTotal > 0;
+    const shouldBeActive = expectedKeys.has(original.idempotencyKey);
+    if (active === shouldBeActive) continue;
+    const points = (shouldBeActive ? 1 : -1) * original.points;
+    const type = shouldBeActive ? 'award_reinstatement' : 'award_reversal';
+    result.push({ id: crypto.randomUUID(), childId: original.childId, points, type, sourceId: original.sourceId, idempotencyKey: `family-link:${type}:${original.id}:${result.length}`, reversesLedgerId: original.id, note: `${shouldBeActive ? 'Restored' : 'Reversed'} practice points after session update`, createdAt: new Date().toISOString() });
+  }
+  return result;
+}
+
+function validateKidSession(session, ids) {
+  if (!session || typeof session.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(session.id) || !ids.has(session.childId)) return false;
+  if (!['complete', 'interrupted'].includes(session.status) || !/^\d{4}-\d{2}-\d{2}$/.test(session.date)) return false;
+  const start = Date.parse(session.startedAt), end = Date.parse(session.endedAt);
+  return Number.isFinite(start) && Number.isFinite(end) && end >= start && end - start <= 24 * 60 * 60_000 && Number.isFinite(session.creditedMs) && session.creditedMs >= 0 && session.creditedMs <= end - start && Array.isArray(session.events) && session.events.length <= 20_000;
+}
+
+async function kidApi(request, env, url) {
+  if (!env.DB) return json({ error: 'Database is not configured.' }, 503);
+  const row = await env.DB.prepare('SELECT state_json, revision FROM app_state WHERE id = 1').first();
+  if (!row) return json({ error: 'Family setup is incomplete. Ask a parent to open Parent Controls first.' }, 503);
+  const current = JSON.parse(row.state_json);
+  if (request.method === 'GET' && url.pathname === '/api/kid-data') return json({ state: { ...current, parentMode: false }, revision: row.revision });
+  if (request.method === 'PUT' && url.pathname === '/api/kid-data') {
+    const length = Number(request.headers.get('content-length') || 0);
+    if (length > 1_000_000) return json({ error: 'State is too large.' }, 413);
+    let input; try { input = await request.json(); } catch { return json({ error: 'Invalid JSON.' }, 400); }
+    if (!input?.state || !Number.isInteger(input.revision) || input.revision !== row.revision) return json({ error: 'Family data changed. Refresh to continue.', revision: row.revision }, 409);
+    const proposed = input.state;
+    const ids = new Set(current.children.map((child) => child.id));
+    if (!Array.isArray(proposed.sessions) || !Array.isArray(proposed.redemptions) || !Array.isArray(proposed.children) || proposed.children.map((c) => c.id).sort().join('|') !== [...ids].sort().join('|')) return json({ error: 'Invalid family update.' }, 400);
+    const existingSessions = new Map(current.sessions.map((session) => [session.id, session]));
+    const nextSessions = [...current.sessions];
+    for (const session of proposed.sessions) {
+      const existing = existingSessions.get(session.id);
+      if (existing) {
+        if (session.recording && !existing.recording && env.RECORDINGS) {
+          const object = await env.RECORDINGS.head(`sessions/${session.id}.audio`);
+          if (object) Object.assign(existing, { recording: { mimeType: object.httpMetadata?.contentType || 'audio/webm', size: object.size, createdAt: new Date().toISOString() } });
+        }
+        continue;
+      }
+      if (!validateKidSession(session, ids) || existingSessions.has(session.id) || nextSessions.some((item) => item.id === session.id)) return json({ error: 'Invalid practice session.' }, 400);
+      if (session.recording && env.RECORDINGS && !await env.RECORDINGS.head(`sessions/${session.id}.audio`)) return json({ error: 'Recording is not available.' }, 400);
+      nextSessions.push(session);
+    }
+    let nextCurrent = current.currentSession;
+    const proposedCurrent = proposed.currentSession;
+    if (proposedCurrent) {
+      if (!ids.has(proposedCurrent.childId) || typeof proposedCurrent.id !== 'string' || !Number.isFinite(Date.parse(proposedCurrent.startedAt)) || !Number.isFinite(proposedCurrent.creditedMs) || proposedCurrent.creditedMs < 0 || proposedCurrent.creditedMs > (proposedCurrent.elapsedMs || 0)) return json({ error: 'Invalid active session.' }, 400);
+      if (nextCurrent && nextCurrent.id !== proposedCurrent.id) return json({ error: 'Another practice session is already open.' }, 409);
+      if (nextCurrent && (proposedCurrent.childId !== nextCurrent.childId || proposedCurrent.startedAt !== nextCurrent.startedAt || proposedCurrent.elapsedMs < nextCurrent.elapsedMs || proposedCurrent.creditedMs < nextCurrent.creditedMs)) return json({ error: 'Invalid active session update.' }, 400);
+      nextCurrent = proposedCurrent;
+    } else if (nextCurrent) {
+      const ended = nextSessions.some((session) => session.id === nextCurrent.id);
+      if (!ended) return json({ error: 'The active session must be punched out before it can be closed.' }, 409);
+      nextCurrent = null;
+    }
+    const candidateLedger = addKidPracticeAwards({ ...current, sessions: nextSessions, currentSession: nextCurrent });
+    let nextRedemptions = [...current.redemptions];
+    const oldRequests = new Map(current.redemptions.map((item) => [item.id, item]));
+    for (const request of proposed.redemptions) {
+      const old = oldRequests.get(request.id);
+      if (old) {
+        if (old.status === 'pending' && request.status === 'cancelled') nextRedemptions = nextRedemptions.map((item) => item.id === old.id ? { ...item, status: 'cancelled', resolvedAt: new Date().toISOString() } : item);
+        continue;
+      }
+      const reward = current.rewards.find((item) => item.id === request.rewardId && item.enabled);
+      if (!reward || request.status !== 'pending' || request.cost !== reward.cost || !ids.has(request.childId) || !/^[0-9a-f-]{36}$/i.test(request.id)) return json({ error: 'Invalid reward request.' }, 400);
+      const balance = candidateLedger.filter((item) => item.childId === request.childId).reduce((sum, item) => sum + item.points, 0);
+      const reserved = nextRedemptions.filter((item) => item.childId === request.childId && item.status === 'pending').reduce((sum, item) => sum + item.cost, 0);
+      if (balance - reserved < request.cost) return json({ error: 'Not enough available points.' }, 400);
+      nextRedemptions.push(request);
+    }
+    const updated = { ...current, sessions: nextSessions, currentSession: nextCurrent, redemptions: nextRedemptions, ledger: candidateLedger, parentMode: false };
+    const result = await env.DB.prepare(`UPDATE app_state SET state_json = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1 AND revision = ? RETURNING revision`).bind(JSON.stringify(updated), row.revision).first();
+    if (!result) return json({ error: 'Family data changed. Refresh to continue.' }, 409);
+    return json({ state: { ...updated, currentSession: null }, revision: result.revision });
+  }
+  const recordingMatch = url.pathname.match(/^\/api\/kid-recordings\/([0-9a-f-]{36})$/i);
+  if (recordingMatch && env.RECORDINGS) {
+    const id = recordingMatch[1].toLowerCase();
+    if (!current.sessions.some((session) => session.id === id)) return json({ error: 'Recording not found.' }, 404);
+    const key = `sessions/${id}.audio`;
+    if (request.method === 'PUT') {
+      if (!current.sessions.some((s) => s.id === id || current.currentSession?.id === id)) return json({ error: 'Session not found.' }, 404);
+      const type = request.headers.get('content-type') || '';
+      if (!type.toLowerCase().startsWith('audio/')) return json({ error: 'Only audio recordings are accepted.' }, 415);
+      const length = Number(request.headers.get('content-length') || 0);
+      if (length > 100 * 1024 * 1024) return json({ error: 'Recording must be under 100 MB.' }, 413);
+      await env.RECORDINGS.put(key, request.body, { httpMetadata: { contentType: type } });
+      return json({ ok: true });
+    }
+    if (request.method === 'GET' || request.method === 'HEAD') {
+      const object = await env.RECORDINGS.get(key);
+      if (!object) return json({ error: 'Recording not found.' }, 404);
+      return new Response(request.method === 'HEAD' ? null : object.body, { headers: { 'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream', 'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Length': String(object.size), 'Content-Disposition': 'inline' } });
+    }
+  }
+  return json({ error: 'Not found.' }, 404);
+}
+
 async function api(request, env) {
-  if (!await authorized(request)) return json({ error: 'Parent sign-in required.' }, 401);
   const url = new URL(request.url);
+  if (url.pathname === '/api/kid-data' || url.pathname.startsWith('/api/kid-recordings/')) {
+    if (!familyLinkAuthorized(request, env)) return json({ error: 'Open the family practice link to continue.' }, 401);
+    return kidApi(request, env, url);
+  }
+  if (!await authorized(request)) return json({ error: 'Parent sign-in required.' }, 401);
   const recordingMatch = url.pathname.match(/^\/api\/recordings\/([0-9a-f-]{36})$/i);
   if (recordingMatch) {
     if (!env.RECORDINGS) return json({ error: 'Recording storage is not configured.' }, 503);
@@ -111,9 +268,10 @@ export default {
       try { return await api(request, env); } catch { return json({ error: 'Storage request failed.' }, 500); }
     }
     if (!['GET', 'HEAD'].includes(request.method)) return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } });
-    const asset = ASSETS[url.pathname === '/' ? '/index.html' : url.pathname];
+    const asset = ASSETS[url.pathname === '/' || url.pathname === '/kids' || url.pathname === '/kids/' ? '/index.html' : url.pathname];
     if (!asset) return new Response('Not found', { status: 404 });
     const bytes = Uint8Array.from(atob(asset.body), (c) => c.charCodeAt(0));
-    return new Response(request.method === 'HEAD' ? null : bytes, { headers: { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'microphone=(self)', 'Content-Type': asset.contentType, 'Cache-Control': url.pathname === '/' ? 'no-cache' : 'public, max-age=31536000, immutable' } });
+    const appEntry = url.pathname === '/' || url.pathname === '/kids' || url.pathname === '/kids/';
+    return new Response(request.method === 'HEAD' ? null : bytes, { headers: { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'microphone=(self)', 'Content-Type': asset.contentType, 'Cache-Control': appEntry ? 'no-cache' : 'public, max-age=31536000, immutable' } });
   },
 };

@@ -4,6 +4,17 @@ import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
 import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, ensureFamilyProfiles } from './piano-state.js';
 
 let state = loadState();
+const kidMode = location.pathname === '/kids' || location.pathname === '/kids/';
+function readFamilyKey() {
+  if (!kidMode) return '';
+  const fromLink = location.hash.slice(1);
+  if (fromLink) {
+    localStorage.setItem('piano-punch:kid-link', fromLink);
+    history.replaceState(null, '', location.pathname);
+  }
+  return localStorage.getItem('piano-punch:kid-link') || '';
+}
+const familyKey = readFamilyKey();
 let selectedChild = state.children[0].id;
 let timer = null;
 let audio = null;
@@ -38,7 +49,9 @@ function queueCloudSync() {
   cloudSyncTimer = setTimeout(() => {
     const snapshot = structuredClone(state);
     cloudSyncChain = cloudSyncChain.then(async () => {
-      const response = await fetch('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state: snapshot, revision: cloudRevision }) });
+      const headers = { 'Content-Type': 'application/json' };
+      if (kidMode) headers['X-Piano-Family-Key'] = familyKey;
+      const response = await fetch(kidMode ? '/api/kid-data' : '/api/state', { method: 'PUT', headers, body: JSON.stringify({ state: snapshot, revision: cloudRevision }) });
       if (response.status === 409) { cloudConflict = true; $('#cloud-status').textContent = 'Sync conflict — reload'; return; }
       if (!response.ok) throw new Error(`Cloud sync failed (${response.status})`);
       cloudRevision = (await response.json()).revision;
@@ -69,6 +82,17 @@ async function hydrateCloudState() {
     saveState(state);
     $('#cloud-status').textContent = 'Offline — saved here';
   }
+}
+async function hydrateKidState() {
+  if (!familyKey) throw new Error('Missing family link key');
+  const response = await fetch('/api/kid-data', { cache: 'no-store', headers: { 'X-Piano-Family-Key': familyKey } });
+  if (!response.ok) throw new Error('The family link could not be verified. Reopen the original link.');
+  const remote = await response.json();
+  if (!remote.state?.children?.length) throw new Error('Family profiles are not set up yet. Ask a parent to open Parent Controls.');
+  state = remote.state;
+  cloudRevision = remote.revision || 0;
+  cloudReady = true;
+  saveState(state);
 }
 function child() { return state.children.find((c) => c.id === selectedChild); }
 function sessionElapsed() { return timer?.snapshot(performance.now() - clockBase).elapsedMs || 0; }
@@ -121,7 +145,7 @@ function render() {
     const pendingRequest=state.redemptions.find((x)=>x.childId===c.id&&x.rewardId===r.id&&x.status==='pending');
     return `<article class="reward-card">${r.image ? `<img src="${escapeHtml(r.image)}" alt="" class="reward-image" />` : ''}<div><strong>${escapeHtml(r.name)}</strong><p>${escapeHtml(r.description || '')}${r.restrictions ? ` · ${escapeHtml(r.restrictions)}` : ''}</p></div><div class="reward-cost">${r.cost} pts</div><div class="mini-track"><span style="width:${pct}%"></span></div><small>${available} / ${r.cost} points ${available >= r.cost ? '· Ready to request' : '· Keep going'}</small>${pendingRequest?`<button class="request-reward" data-cancel="${pendingRequest.id}">Request pending · cancel</button>`:`<button class="request-reward" data-reward="${r.id}" ${available < r.cost ? 'disabled' : ''}>Request reward</button>`}</article>`;
   }).join('') || '<p class="muted">Your parent can add a reward.</p>';
-  const historyHtml = state.sessions.filter((s) => s.childId === c.id).slice().reverse().slice(0,8).map((s) => `<li><span>${new Date(`${s.date}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})} · ${new Date(s.startedAt).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}${s.recording ? `<span class="kid-playback"><small>Listen to your practice · full session</small><audio controls preload="none" src="/api/recordings/${s.id}" aria-label="Listen to your practice from ${s.date}"></audio></span>` : ''}</span><strong>${fmt(s.creditedMs)} playing</strong></li>`).join('') || '<li class="muted">Your first session will appear here.</li>';
+  const historyHtml = state.sessions.filter((s) => s.childId === c.id).slice().reverse().slice(0,8).map((s) => `<li><span>${new Date(`${s.date}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})} · ${new Date(s.startedAt).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}${s.recording ? `<span class="kid-playback"><small>Listen to your practice · full session</small>${kidMode ? `<button class="small-button" type="button" data-kid-play="${s.id}">Play recording</button><span data-kid-player="${s.id}"></span>` : `<audio controls preload="none" src="/api/recordings/${s.id}" aria-label="Listen to your practice from ${s.date}"></audio>`}</span>` : ''}</span><strong>${fmt(s.creditedMs)} playing</strong></li>`).join('') || '<li class="muted">Your first session will appear here.</li>';
   // Avoid replacing audio controls on each live timer tick; playback should continue uninterrupted.
   if ($('#history-list').innerHTML !== historyHtml) $('#history-list').innerHTML = historyHtml;
   $('#parent-dashboard').hidden = !state.parentMode;
@@ -503,7 +527,9 @@ function finishPractice() {
   recordingPromise.then(async (blob) => {
     if (!blob?.size) return;
     try {
-      const response = await fetch(`/api/recordings/${session.id}`, { method: 'PUT', headers: { 'Content-Type': blob.type || 'application/octet-stream' }, body: blob });
+      const headers = { 'Content-Type': blob.type || 'application/octet-stream' };
+      if (kidMode) headers['X-Piano-Family-Key'] = familyKey;
+      const response = await fetch(`${kidMode ? '/api/kid-recordings' : '/api/recordings'}/${session.id}`, { method: 'PUT', headers, body: blob });
       if (!response.ok) throw new Error('Upload failed');
       session.recording = { mimeType: blob.type, size: blob.size, createdAt: new Date().toISOString() };
       persist(); showToast('Private recording saved for parent review.');
@@ -625,6 +651,12 @@ function bindEvents() {
     }
     const review=event.target.closest('[data-review-session]');
     if(review){ const session=state.sessions.find((s)=>s.id===review.dataset.reviewSession); session.status='complete'; settlePracticeDay(state,session.childId,session.date); reconcilePracticeDay(state,session.childId,session.date,crypto.randomUUID()); persist(); showToast('Verified practice time approved'); }
+    const kidPlay=event.target.closest('[data-kid-play]');
+    if(kidPlay){
+      const slot=document.querySelector(`[data-kid-player="${kidPlay.dataset.kidPlay}"]`);
+      kidPlay.disabled=true; kidPlay.textContent='Loading…';
+      fetch(`/api/kid-recordings/${kidPlay.dataset.kidPlay}`,{headers:{'X-Piano-Family-Key':familyKey}}).then(async(response)=>{if(!response.ok)throw new Error();const player=document.createElement('audio');player.controls=true;player.preload='none';player.src=URL.createObjectURL(await response.blob());player.setAttribute('aria-label','Listen to your practice recording');slot.replaceChildren(player);await player.play();}).catch(()=>showToast('Recording is unavailable.')).finally(()=>{kidPlay.disabled=false;kidPlay.textContent='Play recording';});
+    }
     const deleteRecording=event.target.closest('[data-delete-recording]');
     if(deleteRecording){
       const session=state.sessions.find((s)=>s.id===deleteRecording.dataset.deleteRecording);
@@ -656,11 +688,32 @@ function resetRewardForm() { $('#reward-form').reset(); $('#reward-id').value=''
 function showToast(text) { const el=$('#toast'); el.textContent=text; el.classList.add('show'); setTimeout(()=>el.classList.remove('show'),2300); }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  ensureFamilyProfiles(state);
-  saveState(state);
-  await hydrateCloudState();
-  bindEvents();
-  fillSettings(child());
+  if (kidMode) {
+    document.body.classList.add('kid-mode');
+    $('#child-welcome').hidden = false;
+    if (!familyKey) { $('#kid-link-message').textContent = 'This tablet needs the family practice link. Ask a parent to reopen and bookmark it.'; $('#kid-profile-buttons').textContent = ''; return; }
+    try { await hydrateKidState(); }
+    catch (error) { $('#kid-link-message').textContent = error.message; $('#kid-profile-buttons').textContent = ''; return; }
+    bindEvents();
+    fillSettings(child());
+    render();
+    $('#kid-profile-buttons').innerHTML = state.children.map((profile) => `<button type="button" data-kid-profile="${escapeHtml(profile.id)}">${escapeHtml(profile.name)}</button>`).join('');
+    $('#kid-profile-buttons').addEventListener('click', (event) => {
+      const button = event.target.closest('[data-kid-profile]'); if (!button) return;
+      selectedChild = button.dataset.kidProfile;
+      $('#child-welcome').hidden = true;
+      queueCloudSync();
+      render();
+    });
+    $('#kid-link-message').textContent = 'Pick your name to open your practice space.';
+    queueCloudSync();
+  } else {
+    ensureFamilyProfiles(state);
+    saveState(state);
+    await hydrateCloudState();
+    bindEvents();
+    fillSettings(child());
+    render();
+  }
   $('#reward-cancel').addEventListener('click', resetRewardForm);
-  render();
 });
