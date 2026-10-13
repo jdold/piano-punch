@@ -8,3 +8,4 @@
 .recording-audit { display: grid; gap: 8px; margin: 10px 0; padding: 12px; border-radius: 12px; background: #f3f5ee; }
 .recording-audit p { margin: 0; font-size: 12px; color: #758078; }
 .recording-audit audio { width: 100%; max-width: 420px; }
+.screen-status { min-height: 1em; margin: 6px 0; color: #718078; font-size: 12px; }

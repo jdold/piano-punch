@@ -12,6 +12,8 @@ let clockBase = 0;
 let lastAudioFrameAt = 0;
 let startIso = null;
 let microphoneStatus = 'idle';
+let wakeLock = null;
+let wakeLockStatus = 'inactive';
 let cloudRevision = 0;
 let cloudReady = false;
 let cloudConflict = false;
@@ -88,6 +90,7 @@ function render() {
   $('#session-elapsed').textContent = fmt(current.elapsedMs);
   $('#session-active').textContent = fmt(current.activeMs + current.provisionalMs);
   $('#session-credit-note').textContent = current.provisionalMs ? `${fmt(current.provisionalMs)} provisional` : 'Verified active time';
+  $('#screen-status').textContent = wakeLockStatus === 'active' ? 'Screen staying on' : state.currentSession ? 'Keep this page open' : '';
   const displayState = state.currentSession && microphoneStatus === 'starting' ? 'starting' : current.state;
   $('#live-state').textContent = stateLabel(displayState);
   $('#live-state').dataset.state = displayState;
@@ -162,6 +165,7 @@ async function beginPractice() {
   timer.punchIn(0);
   state.currentSession = { id: crypto.randomUUID(), childId: selectedChild, startedAt: startIso, date: dayKey(), recoveryRequired: false, elapsedMs: 0, creditedMs: 0, events: [] };
   persist();
+  requestScreenWakeLock();
   if (ticker) clearInterval(ticker);
   let checkpointAt=0;
   ticker = setInterval(() => {
@@ -172,6 +176,29 @@ async function beginPractice() {
     render();
   }, 250);
   await startAudio();
+}
+
+async function requestScreenWakeLock() {
+  if (!state.currentSession) return;
+  if (!('wakeLock' in navigator) || document.hidden) {
+    wakeLockStatus = 'unavailable'; render(); return;
+  }
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLockStatus = 'active';
+    wakeLock.addEventListener('release', () => {
+      wakeLock = null;
+      if (state.currentSession) { wakeLockStatus = 'unavailable'; render(); }
+    }, { once: true });
+  } catch { wakeLockStatus = 'unavailable'; }
+  render();
+}
+
+function releaseScreenWakeLock() {
+  const held = wakeLock;
+  wakeLock = null;
+  wakeLockStatus = 'inactive';
+  held?.release().catch(() => {});
 }
 
 async function startAudio() {
@@ -282,7 +309,7 @@ function finishPractice() {
   state.sessions.push(session); state.currentSession = null;
   settlePracticeDay(state, session.childId, session.date);
   $('#permission-message').hidden = true;
-  timer = null; startIso = null; microphoneStatus = 'idle';
+  timer = null; startIso = null; microphoneStatus = 'idle'; releaseScreenWakeLock();
   const recordingPromise = stopAudio(); persist();
   const earned=points.ledgerBalance(state.ledger,session.childId)-before;
   if(earned>0) showToast(`Lovely practice! +${earned} points earned${[3,5,7,14,30].includes(currentStreak(state,childFor(session.childId)))?' · streak badge unlocked':''}`);
@@ -413,9 +440,12 @@ function bindEvents() {
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && state.currentSession) loseMic();
-    else if (!document.hidden && audio?.context?.state === 'suspended') audio.context.resume().catch(() => loseMic());
+    else if (!document.hidden && state.currentSession) {
+      requestScreenWakeLock();
+      if (audio?.context?.state === 'suspended') audio.context.resume().catch(() => loseMic());
+    }
   });
-  window.addEventListener('pagehide', () => { if (state.currentSession) { state.currentSession.recoveryRequired = true; saveState(state); stopAudio(); } });
+  window.addEventListener('pagehide', () => { releaseScreenWakeLock(); if (state.currentSession) { state.currentSession.recoveryRequired = true; saveState(state); stopAudio(); } });
   if (state.currentSession) {
     const interrupted=state.currentSession;
     state.sessions.push({ ...interrupted, endedAt: new Date().toISOString(), status: 'interrupted', correctionMs: 0, events: interrupted.events || [] });
