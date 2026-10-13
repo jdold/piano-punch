@@ -93,7 +93,9 @@ function render() {
   $('#points-earned').textContent = `${state.ledger.filter((x) => x.childId === c.id && earnedTypes.has(x.type)).reduce((n,x)=>n+x.points,0)} earned`;
   $('#badges').innerHTML=[3,5,7,14,30].filter((n)=>currentStreak(state,c)>=n).map((n)=>`<span class="badge">${n} day badge</span>`).join('');
   $('#session-elapsed').textContent = fmt(current.elapsedMs);
-  $('#session-active').textContent = fmt(current.activeMs + current.provisionalMs);
+  const livePlayingMs = state.currentSession?.childId === c.id ? current.activeMs + current.provisionalMs : 0;
+  $('#session-active').textContent = fmt(livePlayingMs);
+  $('#session-remaining').textContent = fmt(Math.max(0, goal * 60_000 - activeMinutes * 60_000 - livePlayingMs));
   $('#session-credit-note').textContent = current.provisionalMs ? `${fmt(current.provisionalMs)} provisional` : 'Verified active time';
   $('#screen-status').textContent = wakeLockStatus === 'active' ? 'Screen staying on' : state.currentSession ? 'Keep this page open' : '';
   const displayState = state.currentSession && microphoneStatus === 'starting' ? 'starting' : current.state;
@@ -105,7 +107,8 @@ function render() {
     : 'The microphone stays off until your child punches in.';
   $('#punch-in').hidden = Boolean(state.currentSession);
   $('#punch-out').hidden = !state.currentSession;
-  $('#punch-out').disabled = !state.currentSession;
+  // Punch-out is always available during an open session, even with live audio.
+  $('#punch-out').disabled = false;
   $('#session-detail').hidden = !state.currentSession;
   $('#reward-progress').innerHTML = state.rewards.filter((r) => r.enabled).map((r) => {
     const pending = state.redemptions.filter((x) => x.childId === c.id && x.status === 'pending').reduce((n,x)=>n+x.cost,0);
@@ -114,7 +117,9 @@ function render() {
     const pendingRequest=state.redemptions.find((x)=>x.childId===c.id&&x.rewardId===r.id&&x.status==='pending');
     return `<article class="reward-card">${r.image ? `<img src="${escapeHtml(r.image)}" alt="" class="reward-image" />` : ''}<div><strong>${escapeHtml(r.name)}</strong><p>${escapeHtml(r.description || '')}${r.restrictions ? ` · ${escapeHtml(r.restrictions)}` : ''}</p></div><div class="reward-cost">${r.cost} pts</div><div class="mini-track"><span style="width:${pct}%"></span></div><small>${available} / ${r.cost} points ${available >= r.cost ? '· Ready to request' : '· Keep going'}</small>${pendingRequest?`<button class="request-reward" data-cancel="${pendingRequest.id}">Request pending · cancel</button>`:`<button class="request-reward" data-reward="${r.id}" ${available < r.cost ? 'disabled' : ''}>Request reward</button>`}</article>`;
   }).join('') || '<p class="muted">Your parent can add a reward.</p>';
-  $('#history-list').innerHTML = state.sessions.filter((s) => s.childId === c.id).slice().reverse().slice(0,8).map((s) => `<li><span>${new Date(`${s.date}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})} · ${new Date(s.startedAt).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}</span><strong>${fmt(s.creditedMs)} active</strong></li>`).join('') || '<li class="muted">Your first session will appear here.</li>';
+  const historyHtml = state.sessions.filter((s) => s.childId === c.id).slice().reverse().slice(0,8).map((s) => `<li><span>${new Date(`${s.date}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})} · ${new Date(s.startedAt).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}${s.recording ? `<span class="kid-playback"><small>Listen to your practice · full session</small><audio controls preload="none" src="/api/recordings/${s.id}" aria-label="Listen to your practice from ${s.date}"></audio></span>` : ''}</span><strong>${fmt(s.creditedMs)} playing</strong></li>`).join('') || '<li class="muted">Your first session will appear here.</li>';
+  // Avoid replacing audio controls on each live timer tick; playback should continue uninterrupted.
+  if ($('#history-list').innerHTML !== historyHtml) $('#history-list').innerHTML = historyHtml;
   $('#parent-dashboard').hidden = !state.parentMode;
   if (state.parentMode) {
     renderParent();
