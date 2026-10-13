@@ -54,3 +54,14 @@ test('punching out finalizes verified playing and excludes an unresolved gap', (
   assert.equal(result.elapsedMs, 15_000);
   assert.equal(result.state, TIMER_STATES.ENDED);
 });
+
+test('goal announcement time is not credited while the child hears the celebration', () => {
+  const t = new SmartTimer({ thresholdMs: 5_000 });
+  t.punchIn(0); t.update('playing', 1_000); t.update('playing', 11_000);
+  t.pauseForAnnouncement(11_000);
+  t.tick(14_000);
+  assert.equal(t.snapshot(14_000).activeMs, 10_000);
+  assert.equal(t.snapshot(14_000).state, TIMER_STATES.LISTENING);
+  t.update('playing', 15_000);
+  assert.equal(t.snapshot(15_000).activeMs, 10_000);
+});

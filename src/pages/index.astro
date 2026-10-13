@@ -87,6 +87,13 @@ const title = 'Piano Punch';
       <footer><span>Made for family practice</span><span>♫</span><span>One note at a time</span></footer>
     </main>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <section class="goal-celebration" id="goal-celebration" role="dialog" aria-modal="true" aria-labelledby="celebration-title" hidden>
+      <div class="firework" aria-hidden="true">✦　✧　✦　✧　✦</div>
+      <p class="eyebrow">GOAL COMPLETE</p><h2 id="celebration-title">You did it! 🎉</h2>
+      <p id="celebration-copy">You reached today’s playing goal. Great job!</p>
+      <p class="bonus-copy" id="celebration-bonus"></p>
+      <div class="celebration-actions"><button id="continue-bonus" class="punch-button" type="button">Keep playing for bonus points</button><button id="end-after-goal" class="small-button" type="button">End practice now</button></div>
+    </section>
   </body>
 </html>
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles } from '../src/lib/piano-state.js';
+import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, settlePracticeDay, reconcilePracticeDay } from '../src/lib/piano-state.js';
 
 test('family profile names survive a saved-state reload', () => {
   const values = new Map();
@@ -23,4 +23,23 @@ test('legacy two-child cloud state gains Emma and instrument defaults once', () 
     ['Gordon', 'digital_keyboard'], ['Caroline', 'acoustic_piano'], ['Emma', 'cello'],
   ]);
   assert.equal(ensureFamilyProfiles(state), false);
+});
+
+test('live verified goal time awards daily points once before punch-out', () => {
+  const state = initialState();
+  const first = settlePracticeDay(state, 'son', '2026-10-12', 20 * 60_000);
+  const again = settlePracticeDay(state, 'son', '2026-10-12', 20 * 60_000);
+  assert.equal(first.completed, true);
+  assert.equal(state.ledger.filter((row) => row.type === 'daily_goal').length, 1);
+  assert.equal(state.ledger.filter((row) => row.type === 'practice_day').length, 1);
+  assert.equal(again.ledger.length, first.ledger.length);
+});
+
+test('an interrupted session reverses provisional goal awards until parent review', () => {
+  const state = initialState();
+  settlePracticeDay(state, 'son', '2026-10-12', 20 * 60_000);
+  state.sessions.push({ childId:'son', date:'2026-10-12', creditedMs:20 * 60_000, status:'interrupted' });
+  settlePracticeDay(state, 'son', '2026-10-12');
+  reconcilePracticeDay(state, 'son', '2026-10-12', 'interrupted-test');
+  assert.equal(state.ledger.reduce((sum, row) => sum + row.points, 0), 0);
 });

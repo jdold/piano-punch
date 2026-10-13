@@ -1,7 +1,7 @@
 import { SmartTimer, TIMER_STATES } from './smart-timer.js';
 import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
-import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, points, INSTRUMENT_PRESETS, ensureFamilyProfiles } from './piano-state.js';
+import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, ensureFamilyProfiles } from './piano-state.js';
 
 let state = loadState();
 let selectedChild = state.children[0].id;
@@ -16,6 +16,7 @@ let wakeLock = null;
 let wakeLockStatus = 'inactive';
 let calibrationAudio = null;
 let calibrationGate = null;
+let audioSuppressed = false;
 let cloudRevision = 0;
 let cloudReady = false;
 let cloudConflict = false;
@@ -110,6 +111,9 @@ function render() {
   // Punch-out is always available during an open session, even with live audio.
   $('#punch-out').disabled = false;
   $('#session-detail').hidden = !state.currentSession;
+  $('#goal-celebration').hidden = !state.currentSession?.goalCelebrated;
+  const bonusStep = Math.max(1, Number(c.pointRules.extraEveryMinutes) || 10);
+  $('#celebration-bonus').textContent = `${c.pointRules.extraMinutes || 0} bonus point${c.pointRules.extraMinutes === 1 ? '' : 's'} for every ${bonusStep} extra playing minute${bonusStep === 1 ? '' : 's'}.`;
   $('#reward-progress').innerHTML = state.rewards.filter((r) => r.enabled).map((r) => {
     const pending = state.redemptions.filter((x) => x.childId === c.id && x.status === 'pending').reduce((n,x)=>n+x.cost,0);
     const available = points.ledgerBalance(state.ledger, c.id) - pending;
@@ -126,7 +130,7 @@ function render() {
     if (!['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) fillSettings(c);
   }
   $('#pending-count').textContent = state.redemptions.filter((x) => x.status === 'pending').length;
-  const ringProgress = Math.min(100, current.activeMs / Math.max(1, c.goalMinutes * 60_000) * 100);
+  const ringProgress = Math.min(100, (activeMinutes * 60_000 + livePlayingMs) / Math.max(1, c.goalMinutes * 60_000) * 100);
   $('#live-ring').style.setProperty('--progress', `${ringProgress}%`);
 }
 
@@ -268,7 +272,10 @@ async function beginPractice() {
   clockBase = performance.now(); startIso = new Date().toISOString(); microphoneStatus = 'starting';
   timer = new SmartTimer({ thresholdMs: child().inactivitySeconds * 1000, nowMs: 0 });
   timer.punchIn(0);
-  state.currentSession = { id: crypto.randomUUID(), childId: selectedChild, startedAt: startIso, date: dayKey(), recoveryRequired: false, elapsedMs: 0, creditedMs: 0, events: [] };
+  const priorMs = state.sessions.filter((s) => s.childId === selectedChild && s.date === dayKey() && s.status === 'complete').reduce((sum, s) => sum + s.creditedMs, 0);
+  const extraStepMs = Math.max(1, child().pointRules.extraEveryMinutes || 10) * 60_000;
+  const goalMs = child().goalMinutes * 60_000;
+  state.currentSession = { id: crypto.randomUUID(), childId: selectedChild, startedAt: startIso, date: dayKey(), recoveryRequired: false, elapsedMs: 0, creditedMs: 0, events: [], goalCelebrated: false, extraUnitsSettled: Math.floor(Math.max(0, priorMs - goalMs) / extraStepMs) };
   persist();
   requestScreenWakeLock();
   if (ticker) clearInterval(ticker);
@@ -277,6 +284,7 @@ async function beginPractice() {
     const elapsedNow=performance.now()-clockBase;
     if(audio && lastAudioFrameAt && performance.now()-lastAudioFrameAt>1500 && timer.state!==TIMER_STATES.UNAVAILABLE) loseMic();
     const snapshot=timer.tick(elapsedNow);
+    checkPracticeMilestones(snapshot);
     if(performance.now()-checkpointAt>=5000){ checkpointAt=performance.now(); state.currentSession.elapsedMs=snapshot.elapsedMs; state.currentSession.creditedMs=snapshot.activeMs; state.currentSession.events=snapshot.events; saveState(state); queueCloudSync(); }
     render();
   }, 250);
@@ -348,9 +356,11 @@ async function startAudio() {
     const mute = context.createGain(); mute.gain.value = 0;
     audio.source = source; audio.node = node; audio.mute = mute;
     const gate = new PianoEvidenceGate({ minConfidence: child().detector.confidence });
+    audio.gate = gate;
     node.port.onmessage = (event) => {
       if (event.data?.type !== 'frame' || !timer || !state.currentSession) return;
       lastAudioFrameAt=performance.now();
+      if (audioSuppressed) return;
       if (microphoneStatus === 'starting') microphoneStatus = 'listening';
       const detectorSettings = child().detector;
       gate.minConfidence = detectorSettings.confidence;
@@ -359,6 +369,7 @@ async function startAudio() {
       const priorEvents = timer.events.length;
       timer.update(classValue, performance.now() - clockBase);
       if (timer.events.length > priorEvents) timer.events.at(-1).confidence = Number(features.score.toFixed(3));
+      checkPracticeMilestones(timer.snapshot(performance.now() - clockBase));
       render();
     };
     source.connect(node); node.connect(mute); mute.connect(context.destination);
@@ -407,11 +418,80 @@ function stopAudio() {
   return recording;
 }
 
+function playCelebrationSound() {
+  audioSuppressed = true;
+  const now = performance.now();
+  timer?.pauseForAnnouncement(now - clockBase);
+  const context = audio?.context;
+  if (context?.state === 'running') {
+    const gain = context.createGain(); gain.gain.setValueAtTime(0.0001, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.16, context.currentTime + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.8);
+    gain.connect(context.destination);
+    for (const [offset, frequency] of [[0, 660], [0.16, 880], [0.32, 1320]]) {
+      const oscillator = context.createOscillator(); oscillator.type = 'sine'; oscillator.frequency.value = frequency;
+      oscillator.connect(gain); oscillator.start(context.currentTime + offset); oscillator.stop(context.currentTime + offset + 0.22);
+    }
+    setTimeout(() => gain.disconnect(), 1000);
+  }
+  const resume = () => {
+    if (!state.currentSession) return;
+    audioSuppressed = false;
+    if (audio?.gate) audio.gate.history = [];
+    render();
+  };
+  if ('speechSynthesis' in window && 'SpeechSynthesisUtterance' in window) {
+    const phrase = new SpeechSynthesisUtterance('Hey, you did it! Great job!');
+    phrase.rate = 1.05; phrase.pitch = 1.2;
+    phrase.onend = resume; phrase.onerror = resume;
+    window.speechSynthesis.cancel(); window.speechSynthesis.speak(phrase);
+    setTimeout(resume, 7000);
+  } else setTimeout(resume, 1000);
+}
+
+function checkPracticeMilestones(snapshot) {
+  const session = state.currentSession;
+  if (!session || !snapshot || session.childId !== selectedChild) return;
+  session.elapsedMs = snapshot.elapsedMs;
+  session.creditedMs = snapshot.activeMs;
+  session.events = snapshot.events;
+  const c = childFor(session.childId);
+  const previousMs = state.sessions.filter((s) => s.childId === c.id && s.date === session.date && s.status === 'complete').reduce((sum, s) => sum + s.creditedMs, 0);
+  const verifiedDailyMs = previousMs + snapshot.activeMs;
+  const goalMs = c.goalMinutes * 60_000;
+  if (!session.goalCelebrated && previousMs < goalMs && verifiedDailyMs >= goalMs) {
+    session.goalCelebrated = true;
+    session.events = snapshot.events;
+    const streak = currentStreak(state, c, session.date) + (requiredPracticeDate(c, session.date) ? 1 : 0);
+    const before = points.ledgerBalance(state.ledger, c.id);
+    settlePracticeDay(state, c.id, session.date, snapshot.activeMs, streak);
+    const earned = points.ledgerBalance(state.ledger, c.id) - before;
+    $('#celebration-copy').textContent = `You reached today’s active playing goal. ${earned > 0 ? `+${earned} points earned! ` : ''}Great job!`;
+    playCelebrationSound();
+    persist();
+    $('#continue-bonus').focus();
+  }
+  const stepMs = Math.max(1, Number(c.pointRules.extraEveryMinutes) || 10) * 60_000;
+  const bonusUnits = Math.floor(Math.max(0, verifiedDailyMs - goalMs) / stepMs);
+  if (bonusUnits > (session.extraUnitsSettled || 0)) {
+    const before = points.ledgerBalance(state.ledger, c.id);
+    const streak = currentStreak(state, c, session.date) + (requiredPracticeDate(c, session.date) && verifiedDailyMs >= goalMs ? 1 : 0);
+    settlePracticeDay(state, c.id, session.date, snapshot.activeMs, streak);
+    session.extraUnitsSettled = bonusUnits;
+    const earned = points.ledgerBalance(state.ledger, c.id) - before;
+    if (earned > 0) showToast(`Bonus practice! +${earned} points earned`);
+    persist();
+  }
+}
+
 function finishPractice() {
   if (!timer || !state.currentSession) return;
   const finishAt = performance.now() - clockBase;
   const snapshot = timer.punchOut(finishAt);
   const session = { ...state.currentSession, endedAt: new Date().toISOString(), elapsedMs: snapshot.elapsedMs, creditedMs: snapshot.activeMs, events: snapshot.events, status: 'complete', correctionMs: 0 };
+  $('#goal-celebration').hidden = true;
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  audioSuppressed = false;
   const before=points.ledgerBalance(state.ledger,session.childId);
   state.sessions.push(session); state.currentSession = null;
   settlePracticeDay(state, session.childId, session.date);
@@ -439,6 +519,8 @@ function bindEvents() {
   });
   $('#punch-in').addEventListener('click', beginPractice);
   $('#punch-out').addEventListener('click', finishPractice);
+  $('#continue-bonus').addEventListener('click', () => { $('#goal-celebration').hidden = true; if ('speechSynthesis' in window) window.speechSynthesis.cancel(); audioSuppressed = false; if (audio?.gate) audio.gate.history = []; render(); $('#punch-out').focus(); });
+  $('#end-after-goal').addEventListener('click', finishPractice);
   $('#retry-audio').addEventListener('click', startAudio);
   $('#detector-test-toggle').addEventListener('click', startCalibration);
   $('#instrument-input').addEventListener('change', () => { fillDetectorSettings(child(), true); persist(); });
@@ -562,6 +644,8 @@ function bindEvents() {
     const interrupted=state.currentSession;
     state.sessions.push({ ...interrupted, endedAt: new Date().toISOString(), status: 'interrupted', correctionMs: 0, events: interrupted.events || [] });
     state.currentSession = null;
+    settlePracticeDay(state, interrupted.childId, interrupted.date);
+    reconcilePracticeDay(state, interrupted.childId, interrupted.date, `interrupted:${interrupted.id}`);
     saveState(state);
     setTimeout(()=>showToast('A session was interrupted. Verified time is waiting for parent review.'),100);
   }

@@ -103,9 +103,10 @@ export function currentStreak(state, child, today = dayKey()) {
   return streak;
 }
 
-export function settlePracticeDay(state, childId, date = dayKey()) {
+export function settlePracticeDay(state, childId, date = dayKey(), additionalActiveMs = 0, qualifyingRunDays = undefined) {
   const child = state.children.find((c) => c.id === childId);
-  const mins = creditedMinutesForDay(state, childId, date);
+  const recordedMs = childSessionsForDay(state, childId, date).reduce((sum, session) => sum + session.creditedMs, 0);
+  const mins = Math.floor((recordedMs + Math.max(0, additionalActiveMs)) / 60_000);
   const result = evaluateDay({
     childId,
     date,
@@ -113,7 +114,7 @@ export function settlePracticeDay(state, childId, date = dayKey()) {
     goalMinutes: child.goalMinutes,
     ledger: state.ledger,
     rules: child.pointRules,
-    qualifyingRunDays: currentStreak(state, child, date),
+    qualifyingRunDays: qualifyingRunDays ?? currentStreak(state, child, date),
   });
   state.ledger = result.ledger;
   return result;

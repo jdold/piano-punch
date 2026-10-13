@@ -68,6 +68,15 @@ export class SmartTimer {
     return this.snapshot(nowMs);
   }
 
+  /** Freeze verified credit during a device-generated celebration announcement. */
+  pauseForAnnouncement(nowMs) {
+    this.#advance(nowMs);
+    this.provisionalMs = 0;
+    this.#set(TIMER_STATES.LISTENING, nowMs, 'celebration_announcement');
+    this.lastAt = nowMs;
+    return this.snapshot(nowMs);
+  }
+
   punchOut(nowMs) {
     if (this.startedAt === null) throw new Error('Session has not started');
     this.#advance(nowMs);
