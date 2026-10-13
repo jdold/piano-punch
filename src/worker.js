@@ -1,7 +1,7 @@
 const ASSETS = __ASSETS__;
 const ACCESS_AUD = '472b0c23f85f568f6a50e844b07bde90867e68126247c1213be06c89f73cefba';
 const ACCESS_ISSUER = 'https://jakedold07.cloudflareaccess.com';
-const PARENT_EMAIL = 'jakedold07@gmail.com';
+const PARENT_EMAILS = new Set(['jakedold07@gmail.com', 'jdold@apexdp.com']);
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
@@ -18,7 +18,7 @@ async function authorized(request) {
   try {
     const [head, body, sig] = token.split('.');
     const header = decodePart(head); const claims = decodePart(body);
-    if (header.alg !== 'RS256' || !header.kid || claims.iss !== ACCESS_ISSUER || claims.email?.toLowerCase() !== PARENT_EMAIL || Number(claims.exp) <= Date.now() / 1000 || Number(claims.nbf || 0) > Date.now() / 1000) return false;
+    if (header.alg !== 'RS256' || !header.kid || claims.iss !== ACCESS_ISSUER || !PARENT_EMAILS.has(claims.email?.toLowerCase()) || Number(claims.exp) <= Date.now() / 1000 || Number(claims.nbf || 0) > Date.now() / 1000) return false;
     const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
     if (!aud.includes(ACCESS_AUD)) return false;
     const keyResponse = await fetch(`${ACCESS_ISSUER}/cdn-cgi/access/certs`);
