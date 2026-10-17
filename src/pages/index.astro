@@ -60,7 +60,7 @@ const title = 'Piano Punch';
         <p id="permission-message" class="notice" hidden></p>
         <p id="session-hint" class="session-hint">The microphone stays off until your child punches in.</p>
         <button id="retry-audio" class="small-button retry-audio" type="button" hidden>Try microphone again</button>
-        <div class="punch-row"><button class="punch-button" id="punch-in" type="button">Punch in <span>→</span></button><button class="punch-button punch-out" id="punch-out" type="button" disabled>Punch out <span>■</span></button></div>
+        <div class="punch-row"><button class="punch-button" id="punch-in" type="button">Punch in <span>→</span></button><button class="punch-button" id="manual-pause" type="button" hidden>Pause timer <span>Ⅱ</span></button><button class="punch-button punch-out" id="punch-out" type="button" disabled>Punch out <span>■</span></button></div>
         <div class="state-legend"><span><i class="dot playing"></i>Playing</span><span><i class="dot grace"></i>Grace period</span><span><i class="dot paused"></i>Paused</span></div>
       </section>
 
@@ -86,7 +86,7 @@ const title = 'Piano Punch';
           <div class="admin-block"><h3>Pending requests</h3><div id="redemption-list"></div></div>
           <div class="admin-block"><h3>Points adjustment</h3><form id="adjust-form" class="compact-form"><input id="adjust-points" type="number" placeholder="+ / − points" required /><input id="adjust-note" placeholder="Reason" required /><button class="small-button">Save adjustment</button></form><div class="ledger-wrap"><ul id="ledger-list" class="history-list"></ul></div></div>
           <div class="admin-block"><h3>Special achievement</h3><form id="special-form" class="compact-form"><input id="special-name" placeholder="Achievement" required /><input id="special-points" type="number" min="1" placeholder="Points" required /><button class="small-button">Award points</button></form></div>
-          <div class="admin-block"><h3>Practice timeline and corrections</h3><div id="session-audit-list"></div></div>
+          <div class="admin-block"><h3>Practice timeline and corrections</h3><div id="session-audit-list"></div><h3 class="add-session-heading">Add a missed practice</h3><form id="add-session-form" class="compact-form session-entry-form"><label>Start <input id="add-session-start" type="datetime-local" required /></label><label>End <input id="add-session-end" type="datetime-local" required /></label><label>Credited playing minutes <input id="add-session-active" type="number" min="0" step="0.1" required /></label><input id="add-session-reason" placeholder="Reason for adding this session" required /><button class="small-button">Add practice time</button></form></div>
         </div>
       </section>
 
@@ -117,6 +117,9 @@ const title = 'Piano Punch';
   .session-edit-form { display: grid; gap: 8px; margin: 10px 0; padding: 10px; border-radius: 10px; background: #f7f5ef; }
   .session-edit-form label { display: grid; gap: 4px; color: #6f7c73; font-size: 10px; }
   .session-edit-form input { min-width: 0; border: 1px solid #e2dfd5; border-radius: 7px; padding: 8px; background: white; }
+  .add-session-heading { margin-top: 18px !important; }
+  .session-entry-form { margin-top: 10px; }
+  #manual-pause { background: #66886a; }
   .punch-button[hidden], .retry-audio[hidden] { display: none !important; }
   @keyframes mic-pulse { 50% { opacity: .3; transform: scale(.75); } }
   @media (prefers-reduced-motion: reduce) { .live-pill[data-state="starting"] i { animation: none; } }
