@@ -51,7 +51,7 @@ export function reconcileDayAwards({ childId, date, creditedMinutes, goalMinutes
   const expected = new Set(evaluateDay({ childId, date, creditedMinutes, goalMinutes, ledger: [], rules, qualifyingRunDays }).ledger.map((row) => row.idempotencyKey));
   const autoTypes = new Set(['daily_goal','practice_day','streak_milestone','extra_minutes']);
   let next = [...ledger];
-  for (const original of ledger.filter((row) => row.childId === childId && autoTypes.has(row.type) && !row.reversesLedgerId)) {
+  for (const original of ledger.filter((row) => row.childId === childId && row.sourceId === date && autoTypes.has(row.type) && !row.reversesLedgerId)) {
     const reversals = next.filter((row) => row.reversesLedgerId === original.id).reduce((sum, row) => sum + row.points, 0);
     const currentlyActive = original.points + reversals > 0;
     const shouldBeActive = expected.has(original.idempotencyKey);
