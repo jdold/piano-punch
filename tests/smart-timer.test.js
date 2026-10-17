@@ -65,3 +65,18 @@ test('goal announcement time is not credited while the child hears the celebrati
   t.update('playing', 15_000);
   assert.equal(t.snapshot(15_000).activeMs, 10_000);
 });
+
+test('manual pause freezes credit regardless of microphone activity and resumes in listening state', () => {
+  const t = new SmartTimer({ thresholdMs: 5_000 });
+  t.punchIn(0); t.update('playing', 1_000); t.update('playing', 11_000);
+  t.manualPause(11_000);
+  t.update('playing', 30_000);
+  assert.equal(t.snapshot(30_000).activeMs, 10_000);
+  assert.equal(t.snapshot(30_000).state, TIMER_STATES.PAUSED);
+  t.manualResume(30_000);
+  t.update('playing', 31_000);
+  t.update('playing', 36_000);
+  assert.equal(t.snapshot(36_000).activeMs, 15_000);
+  assert.ok(t.snapshot(36_000).events.some((event) => event.reason === 'manual_pause'));
+  assert.ok(t.snapshot(36_000).events.some((event) => event.reason === 'manual_resume'));
+});
