@@ -61,3 +61,12 @@ test('historical correction reverses an invalid daily award and restores it only
   const restored=reconcileDayAwards({childId:'son',date:'2026-10-12',creditedMinutes:20,goalMinutes:20,ledger:lower,rules:DEFAULT_RULES,correctionId:'edit-2'});
   assert.equal(ledgerBalance(restored,'son'),11);
 });
+
+test('reconciling one day leaves other days awards untouched', () => {
+  const first=evaluateDay({childId:'son',date:'2026-10-13',creditedMinutes:20,goalMinutes:20,ledger:[],rules:DEFAULT_RULES});
+  const second=evaluateDay({childId:'son',date:'2026-10-14',creditedMinutes:20,goalMinutes:20,ledger:first.ledger,rules:DEFAULT_RULES});
+  const ledger=reconcileDayAwards({childId:'son',date:'2026-10-14',creditedMinutes:0,goalMinutes:20,ledger:second.ledger,rules:DEFAULT_RULES,correctionId:'interrupt-14'});
+  assert.equal(ledger.filter((row)=>row.type==='award_reversal'&&row.sourceId==='2026-10-13').length,0);
+  assert.equal(ledger.filter((row)=>row.type==='award_reversal'&&row.sourceId==='2026-10-14').length,2);
+  assert.equal(ledgerBalance(ledger,'son'),11);
+});
