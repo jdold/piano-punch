@@ -126,7 +126,34 @@ async function hydrateKidState() {
   if (!response.ok) throw new Error('The family link could not be verified. Reopen the original link.');
   const remote = await response.json();
   if (!remote.state?.children?.length) throw new Error('Family profiles are not set up yet. Ask a parent to open Parent Controls.');
-  state = remote.state;
+  const localState = state;
+  const mergedSessions = new Map((remote.state.sessions || []).map((session) => [session.id, session]));
+  const childIds = new Set(remote.state.children.map((profile) => profile.id));
+  for (const session of localState.sessions || []) {
+    const start = Date.parse(session.startedAt), end = Date.parse(session.endedAt);
+    const valid = childIds.has(session.childId) && /^[0-9a-f-]{36}$/i.test(session.id || '')
+      && ['complete', 'interrupted'].includes(session.status) && /^\d{4}-\d{2}-\d{2}$/.test(session.date || '')
+      && Number.isFinite(start) && Number.isFinite(end) && end >= start && end - start <= 24 * 60 * 60_000
+      && Number.isFinite(session.creditedMs) && session.creditedMs >= 0 && session.creditedMs <= end - start
+      && Array.isArray(session.events) && session.events.length <= 20_000;
+    if (valid && !mergedSessions.has(session.id)) mergedSessions.set(session.id, session);
+  }
+  const mergedRedemptions = new Map((remote.state.redemptions || []).map((item) => [item.id, item]));
+  const rewardIds = new Set((remote.state.rewards || []).filter((item) => item.enabled).map((item) => item.id));
+  for (const item of localState.redemptions || []) {
+    if (!mergedRedemptions.has(item.id) && item.status === 'pending' && rewardIds.has(item.rewardId) && childIds.has(item.childId)) mergedRedemptions.set(item.id, item);
+    else if (mergedRedemptions.get(item.id)?.status === 'pending' && item.status === 'cancelled') mergedRedemptions.set(item.id, item);
+  }
+  const localChildren = new Map((localState.children || []).map((profile) => [profile.id, profile]));
+  state = {
+    ...remote.state,
+    sessions: [...mergedSessions.values()],
+    redemptions: [...mergedRedemptions.values()],
+    children: remote.state.children.map((profile) => ({ ...profile, theme: localChildren.get(profile.id)?.theme || profile.theme })),
+    currentSession: remote.state.currentSession?.id === localState.currentSession?.id
+      ? localState.currentSession
+      : remote.state.currentSession || localState.currentSession,
+  };
   ensureKidProfiles(state);
   cloudRevision = remote.revision || 0;
   cloudReady = true;
