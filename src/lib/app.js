@@ -33,6 +33,7 @@ let cloudReady = false;
 let cloudConflict = false;
 let cloudSyncTimer = null;
 let cloudSyncChain = Promise.resolve();
+let cloudRetryCount = 0;
 const $ = (selector) => document.querySelector(selector);
 const fmt = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -51,14 +52,50 @@ function queueCloudSync() {
     cloudSyncChain = cloudSyncChain.then(async () => {
       const headers = { 'Content-Type': 'application/json' };
       if (kidMode) headers['X-Piano-Family-Key'] = familyKey;
-      const response = await fetch(kidMode ? '/api/kid-data' : '/api/state', { method: 'PUT', headers, body: JSON.stringify({ state: snapshot, revision: cloudRevision }) });
+      let response = await fetch(kidMode ? '/api/kid-data' : '/api/state', { method: 'PUT', headers, body: JSON.stringify({ state: snapshot, revision: cloudRevision }) });
+      if (response.status === 409 && kidMode) {
+        // Parent edits or another device can advance the family revision during
+        // practice. Merge append-only child activity and retry once.
+        const latestResponse = await fetch('/api/kid-data', { cache: 'no-store', headers: { 'X-Piano-Family-Key': familyKey } });
+        if (!latestResponse.ok) throw new Error('Family refresh failed (' + latestResponse.status + ')');
+        const latest = await latestResponse.json();
+        const latestState = latest.state;
+        const sessions = new Map((latestState.sessions || []).map((item) => [item.id, item]));
+        for (const item of snapshot.sessions || []) if (!sessions.has(item.id)) sessions.set(item.id, item);
+        const redemptions = new Map((latestState.redemptions || []).map((item) => [item.id, item]));
+        for (const item of snapshot.redemptions || []) {
+          const existing = redemptions.get(item.id);
+          if (!existing) redemptions.set(item.id, item);
+          else if (existing.status === 'pending' && item.status === 'cancelled') redemptions.set(item.id, item);
+        }
+        const localChildren = new Map((snapshot.children || []).map((item) => [item.id, item]));
+        const merged = {
+          ...latestState,
+          sessions: [...sessions.values()],
+          redemptions: [...redemptions.values()],
+          children: (latestState.children || []).map((item) => ({ ...item, theme: localChildren.get(item.id)?.theme || item.theme })),
+          currentSession: latestState.currentSession?.id === snapshot.currentSession?.id
+            ? snapshot.currentSession
+            : latestState.currentSession || snapshot.currentSession,
+        };
+        response = await fetch('/api/kid-data', { method: 'PUT', headers, body: JSON.stringify({ state: merged, revision: latest.revision }) });
+        if (response.status === 409) { cloudConflict = true; $('#cloud-status').textContent = 'Sync conflict — reload'; return; }
+      }
       if (response.status === 409) { cloudConflict = true; $('#cloud-status').textContent = 'Sync conflict — reload'; return; }
       if (!response.ok) throw new Error(`Cloud sync failed (${response.status})`);
       cloudRevision = (await response.json()).revision;
+      cloudRetryCount = 0;
       $('#cloud-status').textContent = 'Synced';
-    }).catch(() => { $('#cloud-status').textContent = 'Offline — saved here'; });
+    }).catch(() => {
+      $('#cloud-status').textContent = kidMode ? 'Sync failed — saved on this tablet' : 'Offline — saved here';
+      if (navigator.onLine && cloudRetryCount < 3) {
+        cloudRetryCount += 1;
+        setTimeout(() => queueCloudSync(), 10_000 * cloudRetryCount);
+      }
+    });
   }, 400);
 }
+window.addEventListener('online', () => { cloudRetryCount = 0; queueCloudSync(); });
 
 async function hydrateCloudState() {
   try {
@@ -132,9 +169,12 @@ function render() {
   $('#live-state').dataset.state = displayState;
   $('#session-heading').textContent = !state.currentSession ? 'Ready when you are' : displayState === 'starting' ? 'Starting your session' : 'Practice session';
   $('#session-hint').textContent = state.currentSession
-    ? 'This session stays open until you punch out. Active time counts only while piano is detected.'
+    ? timer?.manuallyPaused ? 'Timer paused. Resume when you’re ready; playing credit restarts after the instrument is detected.' : 'This session stays open until you punch out. Active time counts only while piano is detected.'
     : 'The microphone stays off until your child punches in.';
   $('#punch-in').hidden = Boolean(state.currentSession);
+  $('#manual-pause').hidden = !state.currentSession;
+  $('#manual-pause').disabled = !state.currentSession || !timer;
+  $('#manual-pause').innerHTML = timer?.manuallyPaused ? 'Resume timer <span>▶</span>' : 'Pause timer <span>Ⅱ</span>';
   $('#punch-out').hidden = !state.currentSession;
   // Punch-out is always available during an open session, even with live audio.
   $('#punch-out').disabled = false;
@@ -149,7 +189,7 @@ function render() {
     const pendingRequest=state.redemptions.find((x)=>x.childId===c.id&&x.rewardId===r.id&&x.status==='pending');
     return `<article class="reward-card">${r.image ? `<img src="${escapeHtml(r.image)}" alt="" class="reward-image" />` : ''}<div><strong>${escapeHtml(r.name)}</strong><p>${escapeHtml(r.description || '')}${r.restrictions ? ` · ${escapeHtml(r.restrictions)}` : ''}</p></div><div class="reward-cost">${r.cost} pts</div><div class="mini-track"><span style="width:${pct}%"></span></div><small>${available} / ${r.cost} points ${available >= r.cost ? '· Ready to request' : '· Keep going'}</small>${pendingRequest?`<button class="request-reward" data-cancel="${pendingRequest.id}">Request pending · cancel</button>`:`<button class="request-reward" data-reward="${r.id}" ${available < r.cost ? 'disabled' : ''}>Request reward</button>`}</article>`;
   }).join('') || '<p class="muted">Your parent can add a reward.</p>';
-  const historyHtml = state.sessions.filter((s) => s.childId === c.id).slice().reverse().slice(0,8).map((s) => `<li><span>${new Date(`${s.date}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})} · ${new Date(s.startedAt).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}${s.recording ? `<span class="kid-playback"><small>Listen to your practice · full session</small>${kidMode ? `<button class="small-button" type="button" data-kid-play="${s.id}">Play recording</button><span data-kid-player="${s.id}"></span>` : `<audio controls preload="none" src="/api/recordings/${s.id}" aria-label="Listen to your practice from ${s.date}"></audio>`}</span>` : ''}</span><strong>${fmt(s.creditedMs)} playing</strong></li>`).join('') || '<li class="muted">Your first session will appear here.</li>';
+  const historyHtml = state.sessions.filter((s) => s.childId === c.id).slice().sort((a,b) => Date.parse(b.startedAt) - Date.parse(a.startedAt)).slice(0,8).map((s) => `<li><span>${new Date(`${s.date}T12:00:00`).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})} · ${new Date(s.startedAt).toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'})}${s.recording ? `<span class="kid-playback"><small>Listen to your practice · full session</small>${kidMode ? `<button class="small-button" type="button" data-kid-play="${s.id}">Play recording</button><span data-kid-player="${s.id}"></span>` : `<audio controls preload="none" src="/api/recordings/${s.id}" aria-label="Listen to your practice from ${s.date}"></audio>`}</span>` : ''}</span><strong>${fmt(s.creditedMs)} playing</strong></li>`).join('') || '<li class="muted">Your first session will appear here.</li>';
   // Avoid replacing audio controls on each live timer tick; playback should continue uninterrupted.
   if ($('#history-list').innerHTML !== historyHtml) $('#history-list').innerHTML = historyHtml;
   $('#parent-dashboard').hidden = !state.parentMode;
@@ -178,7 +218,7 @@ function renderParent() {
   $('#ledger-list').innerHTML = state.ledger.filter((x) => x.childId === selectedChild).slice().reverse().slice(0,8).map((x) => `<li><span>${escapeHtml(x.note || x.type.replaceAll('_',' '))}</span><strong class="${x.points < 0 ? 'negative' : ''}">${x.points > 0 ? '+' : ''}${x.points} pts</strong></li>`).join('') || '<li class="muted">No points yet.</li>';
   $('#reward-admin-list').innerHTML = state.rewards.map((r) => `<article class="child-admin"><div><strong>${escapeHtml(r.name)}</strong><small>${r.cost} points · ${r.enabled ? 'Available' : 'Hidden'}</small></div><div class="actions"><button class="small-button" data-edit-reward="${r.id}">Edit</button><button class="small-button" data-toggle-reward="${r.id}">${r.enabled ? 'Disable' : 'Enable'}</button></div></article>`).join('');
   $('#excused-list').innerHTML = child().excusedDates.map((date) => `<article class="child-admin"><div><strong>${date}</strong><small>Excused / rest day</small></div><button class="small-button" data-unexcuse="${date}">Remove</button></article>`).join('') || '<p class="muted">No excused days saved.</p>';
-  $('#session-audit-list').innerHTML = state.sessions.filter((s) => s.childId === selectedChild).slice().reverse().slice(0,8).map((s) => {
+  $('#session-audit-list').innerHTML = state.sessions.filter((s) => s.childId === selectedChild).slice().sort((a,b) => Date.parse(b.startedAt) - Date.parse(a.startedAt)).slice(0,8).map((s) => {
     const time = (ms) => `${Math.floor(Math.max(0,ms)/60000)}:${String(Math.floor(Math.max(0,ms)/1000)%60).padStart(2,'0')}`;
     const startedAt = s.startedAt || new Date().toISOString();
     const endedAt = s.endedAt || new Date(new Date(startedAt).getTime() + Math.max(0, s.elapsedMs || 0)).toISOString();
@@ -568,6 +608,16 @@ function bindEvents() {
   $('#continue-bonus').addEventListener('click', () => { $('#goal-celebration').hidden = true; if ('speechSynthesis' in window) window.speechSynthesis.cancel(); audioSuppressed = false; if (audio?.gate) audio.gate.history = []; render(); $('#punch-out').focus(); });
   $('#end-after-goal').addEventListener('click', finishPractice);
   $('#retry-audio').addEventListener('click', startAudio);
+  $('#manual-pause').addEventListener('click', () => {
+    if (!timer || !state.currentSession) return;
+    const now = performance.now() - clockBase;
+    const snapshot = timer.manuallyPaused ? timer.manualResume(now) : timer.manualPause(now);
+    state.currentSession.elapsedMs = snapshot.elapsedMs;
+    state.currentSession.creditedMs = snapshot.activeMs;
+    state.currentSession.events = snapshot.events;
+    persist();
+    showToast(timer.manuallyPaused ? 'Timer paused. Take your time.' : 'Timer resumed. Play a few notes to restart credit.');
+  });
   $('#detector-test-toggle').addEventListener('click', startCalibration);
   $('#instrument-input').addEventListener('change', () => { fillDetectorSettings(child(), true); persist(); });
   document.querySelectorAll('#mic-volume, #pitch-low, #pitch-high, #harmonicity, #confidence').forEach((input) => input.addEventListener('input', () => { readDetectorControls(); persist(); }));
@@ -593,6 +643,27 @@ function bindEvents() {
     persist();
   });
   $('#excuse-form').addEventListener('submit',(event)=>{event.preventDefault(); const date=$('#excuse-date').value; if(!date)return; if(!child().excusedDates.includes(date)) child().excusedDates.push(date); recalculateChildAwards(state,child().id); event.target.reset(); persist();});
+  $('#add-session-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const startValue = $('#add-session-start').value;
+    const endValue = $('#add-session-end').value;
+    const startMs = new Date(startValue).getTime();
+    const endMs = new Date(endValue).getTime();
+    const activeMinutes = Number($('#add-session-active').value);
+    const reason = $('#add-session-reason').value.trim();
+    const elapsedMs = endMs - startMs;
+    const creditedMs = Math.round(activeMinutes * 60_000);
+    if (!startValue || !endValue || !Number.isFinite(startMs) || !Number.isFinite(endMs) || elapsedMs <= 0 || elapsedMs > 24 * 60 * 60_000 || !Number.isFinite(creditedMs) || creditedMs < 0 || creditedMs > elapsedMs || !reason) {
+      showToast('Check the start, end, credited minutes, and reason.');
+      return;
+    }
+    const date = dayKey(new Date(startMs));
+    state.sessions.push({ id: crypto.randomUUID(), childId: selectedChild, date, startedAt: new Date(startMs).toISOString(), endedAt: new Date(endMs).toISOString(), elapsedMs, creditedMs, status: 'complete', correctionMs: 0, correctionReason: reason, events: [{ at: 0, state: 'manual_entry', reason, enteredAt: new Date().toISOString() }] });
+    recalculateChildAwards(state, selectedChild);
+    event.target.reset();
+    persist();
+    showToast(`Practice added for ${date}.`);
+  });
   $('#reward-form').addEventListener('submit', (event) => {
     event.preventDefault(); const name = $('#reward-name').value.trim(); const cost = Number($('#reward-cost').value);
     if (!name || !Number.isInteger(cost) || cost <= 0) return;
