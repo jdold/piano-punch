@@ -17,6 +17,7 @@ export class SmartTimer {
     this.provisionalMs = 0;
     this.startedAt = null;
     this.events = [];
+    this.manuallyPaused = false;
   }
 
   punchIn(nowMs) {
@@ -30,6 +31,10 @@ export class SmartTimer {
   update(classification, nowMs) {
     if (this.startedAt === null || this.state === TIMER_STATES.ENDED) return this.snapshot(nowMs);
     this.#advance(nowMs);
+    if (this.manuallyPaused) {
+      this.lastAt = nowMs;
+      return this.snapshot(nowMs);
+    }
 
     if (classification === 'unreliable') {
       this.provisionalMs = 0;
@@ -64,6 +69,27 @@ export class SmartTimer {
     this.#advance(nowMs);
     this.provisionalMs = 0;
     this.#set(TIMER_STATES.UNAVAILABLE, nowMs, 'microphone_lost');
+    this.lastAt = nowMs;
+    return this.snapshot(nowMs);
+  }
+
+  /** Let a player pause credit for a real-world interruption. */
+  manualPause(nowMs) {
+    if (this.startedAt === null || this.state === TIMER_STATES.ENDED || this.manuallyPaused) return this.snapshot(nowMs);
+    this.#advance(nowMs);
+    this.provisionalMs = 0;
+    this.manuallyPaused = true;
+    if (this.state === TIMER_STATES.PAUSED) this.#event(nowMs, TIMER_STATES.PAUSED, 'manual_pause');
+    else this.#set(TIMER_STATES.PAUSED, nowMs, 'manual_pause');
+    this.lastAt = nowMs;
+    return this.snapshot(nowMs);
+  }
+
+  /** Resume listening; credit resumes only after the detector hears playing. */
+  manualResume(nowMs) {
+    if (this.startedAt === null || this.state === TIMER_STATES.ENDED || !this.manuallyPaused) return this.snapshot(nowMs);
+    this.manuallyPaused = false;
+    this.#set(TIMER_STATES.LISTENING, nowMs, 'manual_resume');
     this.lastAt = nowMs;
     return this.snapshot(nowMs);
   }
