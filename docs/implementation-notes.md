@@ -26,3 +26,5 @@ The current UI uses localStorage for a working prototype. It is per-browser and 
 ## Goal celebrated before interruption (2026-10-20)
 
 The live practice UI celebrates as soon as verified active time reaches the daily goal, before the child necessarily punches out. A later page close can recover that same session with `status: interrupted`. A persisted `goalCelebrated` flag is therefore authoritative evidence of a qualifying practice day: streaks and goal awards must retain it, and kid/parent sync merges must not discard a local celebration when the server has a less complete interrupted copy. Sessions interrupted before the celebration remain subject to parent review and do not qualify.
+
+The server remains the shared source of truth; local storage is a recovery queue for offline activity. While a page is open, clients refresh from the server every ten seconds and immediately on focus/return to foreground. Failed saves retry with capped backoff, while revision conflicts are reloaded and merged before retrying.
