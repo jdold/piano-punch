@@ -74,12 +74,13 @@ function addKidPracticeAwards(state) {
   };
   for (const child of state.children) {
     const totals = new Map();
-    for (const session of state.sessions) if (session.childId === child.id && session.status === 'complete') totals.set(session.date, (totals.get(session.date) || 0) + session.creditedMs);
+    for (const session of state.sessions) if (session.childId === child.id && (session.status === 'complete' || session.goalCelebrated === true)) totals.set(session.date, (totals.get(session.date) || 0) + session.creditedMs);
+    const celebratedDates = new Set(state.sessions.filter((session) => session.childId === child.id && session.goalCelebrated === true).map((session) => session.date));
     const lessonDates = new Set((state.lessonSessions || []).filter((lesson) => lesson.childId === child.id).map((lesson) => lesson.date));
     for (const date of lessonDates) if (!totals.has(date)) totals.set(date, 0);
     if (state.currentSession?.childId === child.id) totals.set(state.currentSession.date, (totals.get(state.currentSession.date) || 0) + (state.currentSession.creditedMs || 0));
     const goal = Math.max(1, Number(child.goalMinutes) || 20);
-    const completed = new Set([...totals].filter(([date, ms]) => lessonDates.has(date) || Math.floor(ms / 60_000) >= goal).map(([date]) => date));
+    const completed = new Set([...totals].filter(([date, ms]) => celebratedDates.has(date) || lessonDates.has(date) || Math.floor(ms / 60_000) >= goal).map(([date]) => date));
     const required = (date) => child.requiredWeekdays?.includes(new Date(`${date}T12:00:00Z`).getUTCDay()) && !child.excusedDates?.includes(date);
     for (const [date, ms] of totals) {
       const minutes = Math.floor(ms / 60_000);
@@ -148,6 +149,14 @@ async function kidApi(request, env, url) {
     for (const session of proposed.sessions) {
       const existing = existingSessions.get(session.id);
       if (existing) {
+        if (existing.status === 'interrupted'
+          && (session.status === 'complete' || session.goalCelebrated === true)
+          && validateKidSession(session, ids)) {
+          const index = nextSessions.findIndex((item) => item.id === session.id);
+          const promoted = existing.recording && !session.recording ? { ...session, recording: existing.recording } : session;
+          if (index >= 0) nextSessions[index] = promoted;
+          existingSessions.set(session.id, promoted);
+        }
         if (session.recording && !existing.recording && env.RECORDINGS) {
           const object = await env.RECORDINGS.head(`sessions/${session.id}.audio`);
           if (object) Object.assign(existing, { recording: { mimeType: object.httpMetadata?.contentType || 'audio/webm', size: object.size, createdAt: new Date().toISOString() } });
