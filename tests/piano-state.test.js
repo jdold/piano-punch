@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay } from '../src/lib/piano-state.js';
+import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay, completedDates, currentStreak, recalculateChildAwards } from '../src/lib/piano-state.js';
 
 test('family profile names survive a saved-state reload', () => {
   const values = new Map();
@@ -64,4 +64,17 @@ test('an interrupted session reverses provisional goal awards until parent revie
   settlePracticeDay(state, 'son', '2026-10-12');
   reconcilePracticeDay(state, 'son', '2026-10-12', 'interrupted-test');
   assert.equal(state.ledger.reduce((sum, row) => sum + row.points, 0), 0);
+});
+
+test('a logged lesson counts as a practice day without adding playing minutes', () => {
+  const state = initialState();
+  const child = state.children[0];
+  state.lessonSessions.push({ id:'lesson-1', childId:child.id, date:'2026-10-12', durationMinutes:30, notes:'Scales and recital piece' });
+  recalculateChildAwards(state, child.id);
+  assert.deepEqual(completedDates(state, child), ['2026-10-12']);
+  assert.equal(currentStreak(state, child, '2026-10-12'), 1);
+  assert.equal(state.sessions.length, 0);
+  assert.equal(state.ledger.some((row)=>row.type==='daily_goal'&&row.sourceId==='2026-10-12'), true);
+  assert.equal(state.ledger.some((row)=>row.type==='practice_day'&&row.sourceId==='2026-10-12'), true);
+  assert.equal(state.ledger.some((row)=>row.type==='extra_minutes'), false);
 });
