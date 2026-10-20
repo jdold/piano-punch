@@ -35,6 +35,8 @@ let cloudBaselineState = null;
 let cloudSyncTimer = null;
 let cloudSyncChain = Promise.resolve();
 let cloudRetryCount = 0;
+let cloudRefreshTimer = null;
+let cloudRefreshInFlight = false;
 const $ = (selector) => document.querySelector(selector);
 const fmt = (ms) => `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -49,6 +51,7 @@ function queueCloudSync() {
   if (!cloudReady || cloudConflict) return;
   clearTimeout(cloudSyncTimer);
   cloudSyncTimer = setTimeout(() => {
+    cloudSyncTimer = null;
     const snapshot = structuredClone(state);
     cloudSyncChain = cloudSyncChain.then(async () => {
       let syncedSnapshot = snapshot;
@@ -112,14 +115,32 @@ function queueCloudSync() {
       $('#cloud-status').textContent = 'Synced';
     }).catch(() => {
       $('#cloud-status').textContent = kidMode ? 'Sync failed — saved on this tablet' : 'Offline — saved here';
-      if (navigator.onLine && cloudRetryCount < 3) {
-        cloudRetryCount += 1;
-        setTimeout(() => queueCloudSync(), 10_000 * cloudRetryCount);
+      if (navigator.onLine) {
+        cloudRetryCount = Math.min(cloudRetryCount + 1, 7);
+        const delay = Math.min(60_000, 1_000 * (2 ** cloudRetryCount));
+        setTimeout(() => queueCloudSync(), delay);
       }
     });
   }, 400);
 }
-window.addEventListener('online', () => { cloudRetryCount = 0; queueCloudSync(); });
+window.addEventListener('online', () => { cloudRetryCount = 0; refreshCloudState(); queueCloudSync(); });
+window.addEventListener('focus', () => refreshCloudState());
+
+async function refreshCloudState() {
+  if (!cloudReady || cloudRefreshInFlight || document.hidden || !navigator.onLine || cloudSyncTimer) return;
+  cloudRefreshInFlight = true;
+  try {
+    await cloudSyncChain;
+    cloudConflict = false;
+    if (kidMode) await hydrateKidState();
+    else await hydrateCloudState();
+    render();
+  } catch {
+    $('#cloud-status').textContent = kidMode ? 'Sync unavailable — saved on this device' : 'Offline — saved here';
+  } finally {
+    cloudRefreshInFlight = false;
+  }
+}
 
 async function hydrateCloudState() {
   try {
@@ -159,6 +180,7 @@ async function hydrateKidState() {
   const remote = await response.json();
   if (!remote.state?.children?.length) throw new Error('Family profiles are not set up yet. Ask a parent to open Parent Controls.');
   const localState = state;
+  let recoveredLocalActivity = false;
   const mergedSessions = new Map((remote.state.sessions || []).map((session) => [session.id, session]));
   const childIds = new Set(remote.state.children.map((profile) => profile.id));
   for (const session of localState.sessions || []) {
@@ -173,29 +195,33 @@ async function hydrateKidState() {
       if (!existing || (session.status === 'complete' && existing.status === 'interrupted')
         || (session.goalCelebrated === true && existing.goalCelebrated !== true)) {
         mergedSessions.set(session.id, existing?.recording && !session.recording ? { ...session, recording: existing.recording } : session);
+        recoveredLocalActivity = true;
       }
     }
   }
   const mergedRedemptions = new Map((remote.state.redemptions || []).map((item) => [item.id, item]));
   const rewardIds = new Set((remote.state.rewards || []).filter((item) => item.enabled).map((item) => item.id));
   for (const item of localState.redemptions || []) {
-    if (!mergedRedemptions.has(item.id) && item.status === 'pending' && rewardIds.has(item.rewardId) && childIds.has(item.childId)) mergedRedemptions.set(item.id, item);
-    else if (mergedRedemptions.get(item.id)?.status === 'pending' && item.status === 'cancelled') mergedRedemptions.set(item.id, item);
+    if (!mergedRedemptions.has(item.id) && item.status === 'pending' && rewardIds.has(item.rewardId) && childIds.has(item.childId)) { mergedRedemptions.set(item.id, item); recoveredLocalActivity = true; }
+    else if (mergedRedemptions.get(item.id)?.status === 'pending' && item.status === 'cancelled') { mergedRedemptions.set(item.id, item); recoveredLocalActivity = true; }
   }
   const localChildren = new Map((localState.children || []).map((profile) => [profile.id, profile]));
+  const currentSession = remote.state.currentSession?.id === localState.currentSession?.id
+    ? localState.currentSession
+    : remote.state.currentSession || localState.currentSession;
+  if (currentSession && JSON.stringify(currentSession) !== JSON.stringify(remote.state.currentSession)) recoveredLocalActivity = true;
   state = {
     ...remote.state,
     sessions: [...mergedSessions.values()],
     redemptions: [...mergedRedemptions.values()],
     children: remote.state.children.map((profile) => ({ ...profile, theme: localChildren.get(profile.id)?.theme || profile.theme })),
-    currentSession: remote.state.currentSession?.id === localState.currentSession?.id
-      ? localState.currentSession
-      : remote.state.currentSession || localState.currentSession,
+    currentSession,
   };
   ensureKidProfiles(state);
   cloudRevision = remote.revision || 0;
   cloudReady = true;
   saveState(state);
+  if (recoveredLocalActivity) queueCloudSync();
 }
 function child() { return state.children.find((c) => c.id === selectedChild); }
 function sessionElapsed() { return timer?.snapshot(performance.now() - clockBase).elapsedMs || 0; }
@@ -845,6 +871,7 @@ function bindEvents() {
       requestScreenWakeLock();
       if (audio?.context?.state === 'suspended') audio.context.resume().catch(() => loseMic());
     }
+    if (!document.hidden) refreshCloudState();
   });
   window.addEventListener('pagehide', () => { stopCalibration(); releaseScreenWakeLock(); if (state.currentSession) { state.currentSession.recoveryRequired = true; saveState(state); stopAudio(); } });
   if (state.currentSession) {
@@ -893,4 +920,5 @@ document.addEventListener('DOMContentLoaded', async () => {
     render();
   }
   $('#reward-cancel').addEventListener('click', resetRewardForm);
+  cloudRefreshTimer = setInterval(refreshCloudState, 10_000);
 });
