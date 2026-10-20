@@ -26,9 +26,9 @@ export function addAdjustment(ledger, { childId, points, note }, now = new Date(
   return [...ledger, row];
 }
 
-export function evaluateDay({ childId, date, creditedMinutes, goalMinutes, ledger, rules = DEFAULT_RULES, qualifyingRunDays = 0 }) {
+export function evaluateDay({ childId, date, creditedMinutes, goalMinutes, ledger, rules = DEFAULT_RULES, qualifyingRunDays = 0, lessonCompleted = false }) {
   let next = ledger;
-  const completed = creditedMinutes >= goalMinutes;
+  const completed = creditedMinutes >= goalMinutes || lessonCompleted;
   if (completed) {
     if (rules.dailyGoal > 0) next = addAward(next, { childId, points: rules.dailyGoal, type: 'daily_goal', sourceId: date, idempotencyKey: `daily_goal:${childId}:${date}` }).ledger;
     if (rules.practiceDay > 0) next = addAward(next, { childId, points: rules.practiceDay, type: 'practice_day', sourceId: date, idempotencyKey: `practice_day:${childId}:${date}` }).ledger;
@@ -47,8 +47,8 @@ export function evaluateDay({ childId, date, creditedMinutes, goalMinutes, ledge
 }
 
 /** Append reversals/reinstatements when a parent edits verified historical time. */
-export function reconcileDayAwards({ childId, date, creditedMinutes, goalMinutes, ledger, rules = DEFAULT_RULES, qualifyingRunDays = 0, correctionId }) {
-  const expected = new Set(evaluateDay({ childId, date, creditedMinutes, goalMinutes, ledger: [], rules, qualifyingRunDays }).ledger.map((row) => row.idempotencyKey));
+export function reconcileDayAwards({ childId, date, creditedMinutes, goalMinutes, ledger, rules = DEFAULT_RULES, qualifyingRunDays = 0, lessonCompleted = false, correctionId }) {
+  const expected = new Set(evaluateDay({ childId, date, creditedMinutes, goalMinutes, ledger: [], rules, qualifyingRunDays, lessonCompleted }).ledger.map((row) => row.idempotencyKey));
   const autoTypes = new Set(['daily_goal','practice_day','streak_milestone','extra_minutes']);
   let next = [...ledger];
   for (const original of ledger.filter((row) => row.childId === childId && row.sourceId === date && autoTypes.has(row.type) && !row.reversesLedgerId)) {
