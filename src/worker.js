@@ -75,9 +75,11 @@ function addKidPracticeAwards(state) {
   for (const child of state.children) {
     const totals = new Map();
     for (const session of state.sessions) if (session.childId === child.id && session.status === 'complete') totals.set(session.date, (totals.get(session.date) || 0) + session.creditedMs);
+    const lessonDates = new Set((state.lessonSessions || []).filter((lesson) => lesson.childId === child.id).map((lesson) => lesson.date));
+    for (const date of lessonDates) if (!totals.has(date)) totals.set(date, 0);
     if (state.currentSession?.childId === child.id) totals.set(state.currentSession.date, (totals.get(state.currentSession.date) || 0) + (state.currentSession.creditedMs || 0));
     const goal = Math.max(1, Number(child.goalMinutes) || 20);
-    const completed = new Set([...totals].filter(([, ms]) => Math.floor(ms / 60_000) >= goal).map(([date]) => date));
+    const completed = new Set([...totals].filter(([date, ms]) => lessonDates.has(date) || Math.floor(ms / 60_000) >= goal).map(([date]) => date));
     const required = (date) => child.requiredWeekdays?.includes(new Date(`${date}T12:00:00Z`).getUTCDay()) && !child.excusedDates?.includes(date);
     for (const [date, ms] of totals) {
       const minutes = Math.floor(ms / 60_000);
