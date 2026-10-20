@@ -34,6 +34,7 @@ export function initialState() {
       childProfile('emma', 'Emma', 'cello'),
     ],
     sessions: [],
+    lessonSessions: [],
     ledger: [],
     rewards: [
       { id: 'movie-night', name: 'Choose family movie', description: 'Pick the movie for family night.', cost: 120, enabled: true },
@@ -47,6 +48,7 @@ export function initialState() {
 
 export function ensureFamilyProfiles(state) {
   let changed = false;
+  if (!Array.isArray(state.lessonSessions)) { state.lessonSessions = []; changed = true; }
   const defaults = initialState().children;
   for (const profile of defaults) {
     if (!state.children.some((child) => child.id === profile.id)) {
@@ -100,13 +102,20 @@ export function creditedMinutesForDay(state, childId, date) {
   return Math.floor(childSessionsForDay(state, childId, date).reduce((sum, s) => sum + s.creditedMs, 0) / 60_000);
 }
 
+export function hasLessonForDay(state, childId, date) {
+  return (state.lessonSessions || []).some((lesson) => lesson.childId === childId && lesson.date === date);
+}
+
 export function requiredPracticeDate(child, date) {
   return child.requiredWeekdays.includes(new Date(`${date}T12:00:00`).getDay()) && !child.excusedDates.includes(date);
 }
 
 export function completedDates(state, child) {
-  const dates = [...new Set(state.sessions.filter((s) => s.childId === child.id && s.status === 'complete').map((s) => s.date))].sort();
-  return dates.filter((date) => creditedMinutesForDay(state, child.id, date) >= child.goalMinutes);
+  const dates = [...new Set([
+    ...state.sessions.filter((s) => s.childId === child.id && s.status === 'complete').map((s) => s.date),
+    ...(state.lessonSessions || []).filter((lesson) => lesson.childId === child.id).map((lesson) => lesson.date),
+  ])].sort();
+  return dates.filter((date) => hasLessonForDay(state, child.id, date) || creditedMinutesForDay(state, child.id, date) >= child.goalMinutes);
 }
 
 export function currentStreak(state, child, today = dayKey()) {
@@ -137,6 +146,7 @@ export function settlePracticeDay(state, childId, date = dayKey(), additionalAct
     goalMinutes: child.goalMinutes,
     ledger: state.ledger,
     rules: child.pointRules,
+    lessonCompleted: hasLessonForDay(state, childId, date),
     qualifyingRunDays: qualifyingRunDays ?? currentStreak(state, child, date),
   });
   state.ledger = result.ledger;
@@ -145,11 +155,14 @@ export function settlePracticeDay(state, childId, date = dayKey(), additionalAct
 
 export function reconcilePracticeDay(state, childId, date, correctionId) {
   const c = state.children.find((item) => item.id === childId);
-  state.ledger = reconcileDayAwards({ childId, date, creditedMinutes: creditedMinutesForDay(state, childId, date), goalMinutes: c.goalMinutes, ledger: state.ledger, rules: c.pointRules, qualifyingRunDays: currentStreak(state, c, date), correctionId });
+  state.ledger = reconcileDayAwards({ childId, date, creditedMinutes: creditedMinutesForDay(state, childId, date), goalMinutes: c.goalMinutes, ledger: state.ledger, rules: c.pointRules, lessonCompleted: hasLessonForDay(state, childId, date), qualifyingRunDays: currentStreak(state, c, date), correctionId });
 }
 
 export function recalculateChildAwards(state, childId) {
-  const dates=[...new Set(state.sessions.filter((s)=>s.childId===childId&&s.status==='complete').map((s)=>s.date))].sort();
+  const dates=[...new Set([
+    ...state.sessions.filter((s)=>s.childId===childId&&s.status==='complete').map((s)=>s.date),
+    ...(state.lessonSessions||[]).filter((lesson)=>lesson.childId===childId).map((lesson)=>lesson.date),
+  ])].sort();
   for(const date of dates){
     settlePracticeDay(state,childId,date);
     reconcilePracticeDay(state,childId,date,crypto.randomUUID());
