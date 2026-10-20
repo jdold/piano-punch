@@ -22,3 +22,7 @@ The current UI uses localStorage for a working prototype. It is per-browser and 
 - Calibrate against the actual acoustic and digital pianos and common household background sounds.
 - Move the local state operations behind Worker endpoints and exercise atomic D1 redemption approval.
 - Configure Cloudflare Access and connect the existing D1 database before publishing.
+
+## Goal celebrated before interruption (2026-10-20)
+
+The live practice UI celebrates as soon as verified active time reaches the daily goal, before the child necessarily punches out. A later page close can recover that same session with `status: interrupted`. A persisted `goalCelebrated` flag is therefore authoritative evidence of a qualifying practice day: streaks and goal awards must retain it, and kid/parent sync merges must not discard a local celebration when the server has a less complete interrupted copy. Sessions interrupted before the celebration remain subject to parent review and do not qualify.
