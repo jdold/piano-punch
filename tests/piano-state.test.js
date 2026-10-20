@@ -66,6 +66,19 @@ test('an interrupted session reverses provisional goal awards until parent revie
   assert.equal(state.ledger.reduce((sum, row) => sum + row.points, 0), 0);
 });
 
+test('a celebrated 30-minute goal still counts if the tab later recovers the session as interrupted', () => {
+  const state = initialState();
+  const child = state.children[0];
+  state.sessions.push(
+    { id:'prior-day', childId:child.id, date:'2026-10-15', creditedMs:30*60_000, status:'complete' },
+    { id:'celebrated-interruption', childId:child.id, date:'2026-10-16', creditedMs:30*60_000, elapsedMs:32*60_000, status:'interrupted', goalCelebrated:true },
+  );
+  assert.deepEqual(completedDates(state, child), ['2026-10-15', '2026-10-16']);
+  assert.equal(currentStreak(state, child, '2026-10-16'), 2);
+  assert.equal(recalculateChildAwards(state, child.id), undefined);
+  assert.equal(state.ledger.some((row)=>row.type==='daily_goal'&&row.sourceId==='2026-10-16'), true);
+});
+
 test('a logged lesson counts as a practice day without adding playing minutes', () => {
   const state = initialState();
   const child = state.children[0];
@@ -87,6 +100,17 @@ test('parent hydration recovers locally saved practice missing from cloud state'
   assert.equal(merged.changed, true);
   assert.equal(merged.state.sessions[0].id, 'manual-1');
   assert.equal(merged.state.children[0].goalMinutes, remote.children[0].goalMinutes);
+});
+
+test('parent merge keeps a local goal celebration when cloud has the interrupted session without it', () => {
+  const remote = initialState();
+  const local = structuredClone(remote);
+  const base = { id:'session-1', childId:'son', date:'2026-10-19', startedAt:'2026-10-19T12:00:00.000Z', endedAt:'2026-10-19T12:40:00.000Z', elapsedMs:40*60_000, creditedMs:30*60_000, status:'interrupted', events:[] };
+  remote.sessions.push({ ...base, goalCelebrated:false });
+  local.sessions.push({ ...base, goalCelebrated:true });
+  const merged = mergeParentActivity(remote, local);
+  assert.equal(merged.state.sessions[0].goalCelebrated, true);
+  assert.equal(completedDates(merged.state, merged.state.children[0]).includes('2026-10-19'), true);
 });
 
 test('parent sync conflict preserves the local child setting changed since last sync', () => {
