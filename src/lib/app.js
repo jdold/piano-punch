@@ -1,7 +1,7 @@
 import { SmartTimer, TIMER_STATES } from './smart-timer.js';
 import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
-import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles } from './piano-state.js';
+import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, mergeParentActivity, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles } from './piano-state.js';
 
 let state = loadState();
 const kidMode = location.pathname === '/kids' || location.pathname === '/kids/';
@@ -31,6 +31,7 @@ let audioSuppressed = false;
 let cloudRevision = 0;
 let cloudReady = false;
 let cloudConflict = false;
+let cloudBaselineState = null;
 let cloudSyncTimer = null;
 let cloudSyncChain = Promise.resolve();
 let cloudRetryCount = 0;
@@ -50,6 +51,7 @@ function queueCloudSync() {
   cloudSyncTimer = setTimeout(() => {
     const snapshot = structuredClone(state);
     cloudSyncChain = cloudSyncChain.then(async () => {
+      let syncedSnapshot = snapshot;
       const headers = { 'Content-Type': 'application/json' };
       if (kidMode) headers['X-Piano-Family-Key'] = familyKey;
       let response = await fetch(kidMode ? '/api/kid-data' : '/api/state', { method: 'PUT', headers, body: JSON.stringify({ state: snapshot, revision: cloudRevision }) });
@@ -81,9 +83,25 @@ function queueCloudSync() {
         response = await fetch('/api/kid-data', { method: 'PUT', headers, body: JSON.stringify({ state: merged, revision: latest.revision }) });
         if (response.status === 409) { cloudConflict = true; $('#cloud-status').textContent = 'Sync conflict — reload'; return; }
       }
+      if (response.status === 409 && !kidMode) {
+        const latestResponse = await fetch('/api/state', { cache: 'no-store' });
+        if (!latestResponse.ok) throw new Error('Family refresh failed (' + latestResponse.status + ')');
+        const latest = await latestResponse.json();
+        if (!latest.state) throw new Error('Family state is unavailable.');
+        const merged = mergeParentActivity(latest.state, snapshot, cloudBaselineState || latest.state);
+        state = merged.state;
+        for (const child of state.children) recalculateChildAwards(state, child.id);
+        saveState(state);
+        const retrySnapshot = structuredClone(state);
+        syncedSnapshot = retrySnapshot;
+        response = await fetch('/api/state', { method: 'PUT', headers, body: JSON.stringify({ state: retrySnapshot, revision: latest.revision }) });
+        if (response.status === 409) { cloudConflict = true; $('#cloud-status').textContent = 'Sync conflict — reload'; return; }
+        if (response.ok) cloudBaselineState = retrySnapshot;
+      }
       if (response.status === 409) { cloudConflict = true; $('#cloud-status').textContent = 'Sync conflict — reload'; return; }
       if (!response.ok) throw new Error(`Cloud sync failed (${response.status})`);
       cloudRevision = (await response.json()).revision;
+      if (!kidMode) cloudBaselineState = structuredClone(syncedSnapshot);
       cloudRetryCount = 0;
       $('#cloud-status').textContent = 'Synced';
     }).catch(() => {
@@ -103,8 +121,13 @@ async function hydrateCloudState() {
     if (!response.ok) throw new Error('Cloud state unavailable');
     const remote = await response.json();
     cloudRevision = remote.revision || 0;
+    let recoveredLocalActivity = false;
     if (remote.state) {
-      state = remote.state;
+      const local = JSON.parse(localStorage.getItem('piano-punch:v1') || 'null');
+      cloudBaselineState = structuredClone(remote.state);
+      const merged = mergeParentActivity(remote.state, local);
+      state = merged.state;
+      recoveredLocalActivity = merged.changed;
     } else {
       const local = JSON.parse(localStorage.getItem('piano-punch:v1') || 'null');
       if (local?.children?.length) state = { ...state, ...local };
@@ -113,7 +136,10 @@ async function hydrateCloudState() {
     saveState(state);
     cloudReady = true;
     $('#cloud-status').textContent = remote.state ? 'Synced' : 'Saving…';
-    if (!remote.state || migrated) queueCloudSync();
+    if (!remote.state || migrated || recoveredLocalActivity) {
+      for (const child of state.children) recalculateChildAwards(state, child.id);
+      queueCloudSync();
+    }
   } catch {
     ensureFamilyProfiles(state);
     saveState(state);
