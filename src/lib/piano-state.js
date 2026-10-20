@@ -98,8 +98,16 @@ export function childSessionsForDay(state, childId, date) {
   return state.sessions.filter((s) => s.childId === childId && s.date === date && s.status === 'complete');
 }
 
+// Reaching the goal triggers a saved celebration before the child punches out.
+// If the tab closes afterward, the session is recovered as interrupted, but
+// that must not erase an already verified practice day.
+export function qualifyingSessionsForDay(state, childId, date) {
+  return state.sessions.filter((s) => s.childId === childId && s.date === date
+    && (s.status === 'complete' || s.goalCelebrated === true));
+}
+
 export function creditedMinutesForDay(state, childId, date) {
-  return Math.floor(childSessionsForDay(state, childId, date).reduce((sum, s) => sum + s.creditedMs, 0) / 60_000);
+  return Math.floor(qualifyingSessionsForDay(state, childId, date).reduce((sum, s) => sum + s.creditedMs, 0) / 60_000);
 }
 
 export function hasLessonForDay(state, childId, date) {
@@ -112,10 +120,12 @@ export function requiredPracticeDate(child, date) {
 
 export function completedDates(state, child) {
   const dates = [...new Set([
-    ...state.sessions.filter((s) => s.childId === child.id && s.status === 'complete').map((s) => s.date),
+    ...state.sessions.filter((s) => s.childId === child.id && (s.status === 'complete' || s.goalCelebrated === true)).map((s) => s.date),
     ...(state.lessonSessions || []).filter((lesson) => lesson.childId === child.id).map((lesson) => lesson.date),
   ])].sort();
-  return dates.filter((date) => hasLessonForDay(state, child.id, date) || creditedMinutesForDay(state, child.id, date) >= child.goalMinutes);
+  return dates.filter((date) => hasLessonForDay(state, child.id, date)
+    || state.sessions.some((session) => session.childId === child.id && session.date === date && session.goalCelebrated === true)
+    || creditedMinutesForDay(state, child.id, date) >= child.goalMinutes);
 }
 
 export function currentStreak(state, child, today = dayKey()) {
@@ -137,7 +147,7 @@ export function currentStreak(state, child, today = dayKey()) {
 
 export function settlePracticeDay(state, childId, date = dayKey(), additionalActiveMs = 0, qualifyingRunDays = undefined) {
   const child = state.children.find((c) => c.id === childId);
-  const recordedMs = childSessionsForDay(state, childId, date).reduce((sum, session) => sum + session.creditedMs, 0);
+  const recordedMs = qualifyingSessionsForDay(state, childId, date).reduce((sum, session) => sum + session.creditedMs, 0);
   const mins = Math.floor((recordedMs + Math.max(0, additionalActiveMs)) / 60_000);
   const result = evaluateDay({
     childId,
@@ -160,7 +170,7 @@ export function reconcilePracticeDay(state, childId, date, correctionId) {
 
 export function recalculateChildAwards(state, childId) {
   const dates=[...new Set([
-    ...state.sessions.filter((s)=>s.childId===childId&&s.status==='complete').map((s)=>s.date),
+    ...state.sessions.filter((s)=>s.childId===childId&&(s.status==='complete'||s.goalCelebrated===true)).map((s)=>s.date),
     ...(state.lessonSessions||[]).filter((lesson)=>lesson.childId===childId).map((lesson)=>lesson.date),
   ])].sort();
   for(const date of dates){
@@ -185,7 +195,8 @@ export function mergeParentActivity(remote, local, baseline = null) {
     if (!existing) { sessions.set(session.id, session); changed = true; continue; }
     const localCorrection = lastManualCorrectionAt(session);
     const remoteCorrection = lastManualCorrectionAt(existing);
-    if (localCorrection > remoteCorrection || (session.status === 'complete' && existing.status === 'interrupted')) {
+    if (localCorrection > remoteCorrection || (session.status === 'complete' && existing.status === 'interrupted')
+      || (session.goalCelebrated === true && existing.goalCelebrated !== true)) {
       sessions.set(session.id, session);
       changed = true;
     }
