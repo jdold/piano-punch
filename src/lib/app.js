@@ -1,7 +1,7 @@
 import { SmartTimer, TIMER_STATES } from './smart-timer.js';
 import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
-import { loadState, saveState, dayKey, creditedMinutesForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles } from './piano-state.js';
+import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles } from './piano-state.js';
 
 let state = loadState();
 const kidMode = location.pathname === '/kids' || location.pathname === '/kids/';
@@ -176,6 +176,7 @@ function render() {
   $('#theme-toggle').setAttribute('aria-label', `Change colors for ${c.name}`);
   $('#theme-picker').querySelectorAll('[data-profile-theme]').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.profileTheme === c.theme)));
   $('#goal-label').textContent = `${activeMinutes} / ${goal} min today`;
+  $('#today-practice-status').textContent = hasLessonForDay(state, c.id, today) ? 'Lesson logged — today counts toward your practice streak.' : '';
   $('#goal-ring').style.setProperty('--progress', `${percent}%`);
   $('#goal-ring-value').textContent = `${percent}%`;
   $('#today-active').textContent = fmt(activeMinutes * 60_000);
@@ -236,7 +237,8 @@ function stateLabel(value) {
 function renderParent() {
   $('#parent-children').innerHTML = state.children.map((c) => {
     const date = dayKey(); const mins = creditedMinutesForDay(state,c.id,date);
-    return `<article class="child-admin"><div><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(INSTRUMENT_PRESETS[c.instrumentType]?.label || 'Instrument')} · Today ${mins}/${c.goalMinutes} min · ${currentStreak(state,c)} day streak · ${points.ledgerBalance(state.ledger,c.id)} points</small></div><button data-lesson="${c.id}" class="small-button">Confirm lesson</button></article>`;
+    const lessonDone = hasLessonForDay(state,c.id,date);
+    return `<article class="child-admin"><div><strong>${escapeHtml(c.name)}</strong><small>${escapeHtml(INSTRUMENT_PRESETS[c.instrumentType]?.label || 'Instrument')} · Today ${mins}/${c.goalMinutes} min${lessonDone ? ' · Lesson counts as practice' : ''} · ${currentStreak(state,c)} day streak · ${points.ledgerBalance(state.ledger,c.id)} points</small></div></article>`;
   }).join('');
   $('#redemption-list').innerHTML = state.redemptions.filter((x) => x.status === 'pending').map((r) => {
     const c = state.children.find((it) => it.id === r.childId); const reward = state.rewards.find((it) => it.id === r.rewardId);
@@ -245,6 +247,7 @@ function renderParent() {
   $('#ledger-list').innerHTML = state.ledger.filter((x) => x.childId === selectedChild).slice().reverse().slice(0,8).map((x) => `<li><span>${escapeHtml(x.note || x.type.replaceAll('_',' '))}</span><strong class="${x.points < 0 ? 'negative' : ''}">${x.points > 0 ? '+' : ''}${x.points} pts</strong></li>`).join('') || '<li class="muted">No points yet.</li>';
   $('#reward-admin-list').innerHTML = state.rewards.map((r) => `<article class="child-admin"><div><strong>${escapeHtml(r.name)}</strong><small>${r.cost} points · ${r.enabled ? 'Available' : 'Hidden'}</small></div><div class="actions"><button class="small-button" data-edit-reward="${r.id}">Edit</button><button class="small-button" data-toggle-reward="${r.id}">${r.enabled ? 'Disable' : 'Enable'}</button></div></article>`).join('');
   $('#excused-list').innerHTML = child().excusedDates.map((date) => `<article class="child-admin"><div><strong>${date}</strong><small>Excused / rest day</small></div><button class="small-button" data-unexcuse="${date}">Remove</button></article>`).join('') || '<p class="muted">No excused days saved.</p>';
+  $('#lesson-audit-list').innerHTML = (state.lessonSessions || []).filter((lesson) => lesson.childId === selectedChild).slice().sort((a,b) => b.date.localeCompare(a.date) || String(b.createdAt).localeCompare(String(a.createdAt))).slice(0,10).map((lesson) => `<article class="child-admin"><div><strong>${escapeHtml(lesson.date)} · Piano lesson</strong><small>${lesson.durationMinutes} minutes${lesson.notes ? ` · ${escapeHtml(lesson.notes)}` : ''}</small></div></article>`).join('') || '<p class="muted">No lessons logged yet.</p>';
   $('#session-audit-list').innerHTML = state.sessions.filter((s) => s.childId === selectedChild).slice().sort((a,b) => Date.parse(b.startedAt) - Date.parse(a.startedAt)).slice(0,8).map((s) => {
     const time = (ms) => `${Math.floor(Math.max(0,ms)/60000)}:${String(Math.floor(Math.max(0,ms)/1000)%60).padStart(2,'0')}`;
     const startedAt = s.startedAt || new Date().toISOString();
@@ -691,6 +694,24 @@ function bindEvents() {
     persist();
     showToast(`Practice added for ${date}.`);
   });
+  $('#lesson-session-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const date = $('#lesson-session-date').value;
+    const durationMinutes = Number($('#lesson-session-duration').value);
+    const notes = $('#lesson-session-notes').value.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Number.isInteger(durationMinutes) || durationMinutes < 1 || durationMinutes > 300) {
+      showToast('Enter a lesson date and a duration from 1 to 300 minutes.');
+      return;
+    }
+    if (!Array.isArray(state.lessonSessions)) state.lessonSessions = [];
+    state.lessonSessions.push({ id: crypto.randomUUID(), childId: selectedChild, date, durationMinutes, notes, createdAt: new Date().toISOString() });
+    const lessonAward = points.confirmLesson(state.ledger, { childId: selectedChild, lessonDate: date, points: child().pointRules.lesson });
+    state.ledger = lessonAward.ledger;
+    recalculateChildAwards(state, selectedChild);
+    event.target.reset();
+    persist();
+    showToast(`Lesson logged for ${date}; it counts as that day's practice${lessonAward.awarded ? ' and weekly lesson points were added' : ''}.`);
+  });
   $('#reward-form').addEventListener('submit', (event) => {
     event.preventDefault(); const name = $('#reward-name').value.trim(); const cost = Number($('#reward-cost').value);
     if (!name || !Number.isInteger(cost) || cost <= 0) return;
@@ -715,8 +736,6 @@ function bindEvents() {
     }
     const cancelRequest=event.target.closest('[data-cancel]');
     if(cancelRequest){ const result=points.resolveRedemption(state.redemptions,state.ledger,cancelRequest.dataset.cancel,'cancelled'); state.redemptions=result.redemptions; state.ledger=result.ledger; persist(); showToast('Request cancelled; points are available again'); }
-    const lesson = event.target.closest('[data-lesson]');
-    if (lesson) { const date = dayKey(); const result = points.confirmLesson(state.ledger,{childId:lesson.dataset.lesson,lessonDate:date,points:childFor(lesson.dataset.lesson).pointRules.lesson}); state.ledger=result.ledger; persist(); showToast(result.awarded ? 'Lesson points added' : 'Lesson already confirmed this week'); }
     const approve = event.target.closest('[data-approve]');
     if (approve) { const res = points.resolveRedemption(state.redemptions,state.ledger,approve.dataset.approve,'approved'); state.redemptions=res.redemptions; state.ledger=res.ledger; persist(); }
     const reject = event.target.closest('[data-reject]');
