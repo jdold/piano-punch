@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay, completedDates, currentStreak, recalculateChildAwards } from '../src/lib/piano-state.js';
+import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay, completedDates, currentStreak, recalculateChildAwards, mergeParentActivity } from '../src/lib/piano-state.js';
 
 test('family profile names survive a saved-state reload', () => {
   const values = new Map();
@@ -77,4 +77,25 @@ test('a logged lesson counts as a practice day without adding playing minutes', 
   assert.equal(state.ledger.some((row)=>row.type==='daily_goal'&&row.sourceId==='2026-10-12'), true);
   assert.equal(state.ledger.some((row)=>row.type==='practice_day'&&row.sourceId==='2026-10-12'), true);
   assert.equal(state.ledger.some((row)=>row.type==='extra_minutes'), false);
+});
+
+test('parent hydration recovers locally saved practice missing from cloud state', () => {
+  const remote = initialState();
+  const local = structuredClone(remote);
+  local.sessions.push({ id:'manual-1', childId:'son', date:'2026-10-19', startedAt:'2026-10-19T12:00:00.000Z', endedAt:'2026-10-19T12:30:00.000Z', elapsedMs:30*60_000, creditedMs:30*60_000, status:'complete', events:[] });
+  const merged = mergeParentActivity(remote, local);
+  assert.equal(merged.changed, true);
+  assert.equal(merged.state.sessions[0].id, 'manual-1');
+  assert.equal(merged.state.children[0].goalMinutes, remote.children[0].goalMinutes);
+});
+
+test('parent sync conflict preserves the local child setting changed since last sync', () => {
+  const baseline = initialState();
+  const latest = structuredClone(baseline);
+  latest.children[1].theme = 'purple';
+  const local = structuredClone(baseline);
+  local.children[0].goalMinutes = 35;
+  const merged = mergeParentActivity(latest, local, baseline);
+  assert.equal(merged.state.children[0].goalMinutes, 35);
+  assert.equal(merged.state.children[1].theme, 'purple');
 });
