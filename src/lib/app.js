@@ -63,7 +63,13 @@ function queueCloudSync() {
         const latest = await latestResponse.json();
         const latestState = latest.state;
         const sessions = new Map((latestState.sessions || []).map((item) => [item.id, item]));
-        for (const item of snapshot.sessions || []) if (!sessions.has(item.id)) sessions.set(item.id, item);
+        for (const item of snapshot.sessions || []) {
+          const existing = sessions.get(item.id);
+          if (!existing || (item.status === 'complete' && existing.status === 'interrupted')
+            || (item.goalCelebrated === true && existing.goalCelebrated !== true)) {
+            sessions.set(item.id, existing?.recording && !item.recording ? { ...item, recording: existing.recording } : item);
+          }
+        }
         const redemptions = new Map((latestState.redemptions || []).map((item) => [item.id, item]));
         for (const item of snapshot.redemptions || []) {
           const existing = redemptions.get(item.id);
@@ -162,7 +168,13 @@ async function hydrateKidState() {
       && Number.isFinite(start) && Number.isFinite(end) && end >= start && end - start <= 24 * 60 * 60_000
       && Number.isFinite(session.creditedMs) && session.creditedMs >= 0 && session.creditedMs <= end - start
       && Array.isArray(session.events) && session.events.length <= 20_000;
-    if (valid && !mergedSessions.has(session.id)) mergedSessions.set(session.id, session);
+    if (valid) {
+      const existing = mergedSessions.get(session.id);
+      if (!existing || (session.status === 'complete' && existing.status === 'interrupted')
+        || (session.goalCelebrated === true && existing.goalCelebrated !== true)) {
+        mergedSessions.set(session.id, existing?.recording && !session.recording ? { ...session, recording: existing.recording } : session);
+      }
+    }
   }
   const mergedRedemptions = new Map((remote.state.redemptions || []).map((item) => [item.id, item]));
   const rewardIds = new Set((remote.state.rewards || []).filter((item) => item.enabled).map((item) => item.id));
