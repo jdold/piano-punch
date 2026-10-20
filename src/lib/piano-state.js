@@ -169,4 +169,75 @@ export function recalculateChildAwards(state, childId) {
   }
 }
 
+function lastManualCorrectionAt(session) {
+  return (session.events || []).filter((event) => event.state === 'manual_correction').reduce((latest, event) => {
+    const at = Date.parse(event.correctedAt || '');
+    return Number.isFinite(at) && at > latest ? at : latest;
+  }, 0);
+}
+
+export function mergeParentActivity(remote, local, baseline = null) {
+  if (!local) return { state: remote, changed: false };
+  let changed = false;
+  const sessions = new Map((remote.sessions || []).map((session) => [session.id, session]));
+  for (const session of local.sessions || []) {
+    const existing = sessions.get(session.id);
+    if (!existing) { sessions.set(session.id, session); changed = true; continue; }
+    const localCorrection = lastManualCorrectionAt(session);
+    const remoteCorrection = lastManualCorrectionAt(existing);
+    if (localCorrection > remoteCorrection || (session.status === 'complete' && existing.status === 'interrupted')) {
+      sessions.set(session.id, session);
+      changed = true;
+    }
+  }
+  const mergeById = (remoteRows, localRows, keyOf) => {
+    const rows = new Map((remoteRows || []).map((row) => [keyOf(row), row]));
+    for (const row of localRows || []) {
+      const key = keyOf(row);
+      const existing = rows.get(key);
+      if (!existing) { rows.set(key, row); changed = true; }
+      else if (row.status && existing.status === 'pending' && row.status !== 'pending') {
+        rows.set(key, row);
+        changed = true;
+      }
+    }
+    return [...rows.values()];
+  };
+  const ledger = mergeById(remote.ledger, local.ledger, (row) => row.idempotencyKey || row.id);
+  const lessonSessions = mergeById(remote.lessonSessions, local.lessonSessions, (row) => row.id);
+  const redemptions = mergeById(remote.redemptions, local.redemptions, (row) => row.id);
+  let children = remote.children || [];
+  let rewards = remote.rewards || [];
+  if (baseline) {
+    const baselineChildren = new Map((baseline.children || []).map((child) => [child.id, child]));
+    const localChildren = new Map((local.children || []).map((child) => [child.id, child]));
+    children = children.map((remoteChild) => {
+      const localChild = localChildren.get(remoteChild.id);
+      const baselineChild = baselineChildren.get(remoteChild.id);
+      if (!localChild || !baselineChild) return remoteChild;
+      const mergedChild = { ...remoteChild };
+      for (const [key, value] of Object.entries(localChild)) {
+        if (JSON.stringify(value) !== JSON.stringify(baselineChild[key]) && JSON.stringify(value) !== JSON.stringify(remoteChild[key])) {
+          mergedChild[key] = value;
+          changed = true;
+        }
+      }
+      return mergedChild;
+    });
+    const baselineRewards = new Map((baseline.rewards || []).map((reward) => [reward.id, reward]));
+    const rewardMap = new Map(rewards.map((reward) => [reward.id, reward]));
+    for (const localReward of local.rewards || []) {
+      const baselineReward = baselineRewards.get(localReward.id);
+      if (!baselineReward) {
+        if (!rewardMap.has(localReward.id)) { rewardMap.set(localReward.id, localReward); changed = true; }
+      } else if (JSON.stringify(localReward) !== JSON.stringify(baselineReward) && JSON.stringify(localReward) !== JSON.stringify(rewardMap.get(localReward.id))) {
+        rewardMap.set(localReward.id, localReward);
+        changed = true;
+      }
+    }
+    rewards = [...rewardMap.values()];
+  }
+  return { state: { ...remote, children, rewards, sessions: [...sessions.values()], ledger, lessonSessions, redemptions }, changed };
+}
+
 export const points = { addAward, addAdjustment, confirmLesson, requestRedemption, resolveRedemption, ledgerBalance };
