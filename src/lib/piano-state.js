@@ -1,4 +1,5 @@
 import { DEFAULT_RULES, evaluateDay, reconcileDayAwards, addAward, addAdjustment, confirmLesson, requestRedemption, resolveRedemption, ledgerBalance } from './rewards.js';
+import { packCloudState, unpackCloudState } from './cloud-state.js';
 
 export const STORAGE_KEY = 'piano-punch:v1';
 
@@ -79,14 +80,36 @@ export function ensureKidProfiles(state) {
 export function loadState(storage = globalThis.localStorage) {
   try {
     const saved = JSON.parse(storage?.getItem(STORAGE_KEY) || 'null');
-    return saved?.children?.length ? { ...initialState(), ...saved } : initialState();
+    return saved?.children?.length ? unpackCloudState({ ...initialState(), ...saved }) : initialState();
   } catch {
     return initialState();
   }
 }
 
 export function saveState(state, storage = globalThis.localStorage) {
-  storage?.setItem(STORAGE_KEY, JSON.stringify(state));
+  storage?.setItem(STORAGE_KEY, JSON.stringify(packCloudState(state)));
+}
+
+export function recoverInterruptedSession(session, now = Date.now()) {
+  const startedAt = Date.parse(session.startedAt || '');
+  const elapsedMs = Number.isFinite(Number(session.elapsedMs)) ? Math.max(0, Number(session.elapsedMs)) : 0;
+  const checkpointAt = Date.parse(session.checkpointAt || '');
+  const elapsedEnd = Number.isFinite(startedAt) ? startedAt + elapsedMs : NaN;
+  const endedAtMs = Number.isFinite(checkpointAt) && Number.isFinite(elapsedEnd)
+    ? Math.max(startedAt, Math.min(checkpointAt, elapsedEnd))
+    : elapsedEnd;
+
+  return {
+    ...session,
+    endedAt: Number.isFinite(endedAtMs) ? new Date(endedAtMs).toISOString() : new Date(now).toISOString(),
+    elapsedMs: Number.isFinite(startedAt) && Number.isFinite(endedAtMs)
+      ? Math.max(0, endedAtMs - startedAt)
+      : elapsedMs,
+    status: 'interrupted',
+    recoveryRequired: false,
+    correctionMs: 0,
+    events: session.events || [],
+  };
 }
 
 export function dayKey(date = new Date()) {
@@ -252,3 +275,4 @@ export function mergeParentActivity(remote, local, baseline = null) {
 }
 
 export const points = { addAward, addAdjustment, confirmLesson, requestRedemption, resolveRedemption, ledgerBalance };
+

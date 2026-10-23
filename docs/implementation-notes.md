@@ -10,7 +10,7 @@ The AudioWorklet moves microphone frames off the UI thread. A local FFT feature 
 
 ## Data and access
 
-The current UI uses localStorage for a working prototype. It is per-browser and has no login or cloud sync. A private D1 database and initial schema now exist in the Cloudflare account, but the app does not yet use them. Before family deployment, put the app behind Cloudflare Access, add authenticated Worker APIs, and bind private R2 only if recordings are explicitly enabled. Never expose the D1 binding or recording objects publicly.
+The app stores shared family state in D1 and keeps localStorage as an offline recovery copy. Access JWT certificates and imported verification keys are cached per Worker isolate for ten minutes; every parent request still checks the JWT signature, audience, issuer, expiry, and allowed email. Session event timelines are packed for local and cloud persistence and expanded in the browser before use. The packed representation retains every event while reducing repeated field names. Active practice checkpoints save locally every five seconds and sync to the cloud once per minute; refreshes are two minutes apart and pause while parent timeline details or editors are open.
 
 ## Point rules
 
@@ -20,11 +20,14 @@ The current UI uses localStorage for a working prototype. It is per-browser and 
 
 - Run on an iPhone in Safari, including screen lock, backgrounding, calls, and permission revocation.
 - Calibrate against the actual acoustic and digital pianos and common household background sounds.
-- Move the local state operations behind Worker endpoints and exercise atomic D1 redemption approval.
-- Configure Cloudflare Access and connect the existing D1 database before publishing.
 
 ## Goal celebrated before interruption (2026-10-20)
 
 The live practice UI celebrates as soon as verified active time reaches the daily goal, before the child necessarily punches out. A later page close can recover that same session with `status: interrupted`. A persisted `goalCelebrated` flag is therefore authoritative evidence of a qualifying practice day: streaks and goal awards must retain it, and kid/parent sync merges must not discard a local celebration when the server has a less complete interrupted copy. Sessions interrupted before the celebration remain subject to parent review and do not qualify.
 
-The server remains the shared source of truth; local storage is a recovery queue for offline activity. While a page is open, clients refresh from the server every ten seconds and immediately on focus/return to foreground. Failed saves retry with capped backoff, while revision conflicts are reloaded and merged before retrying.
+The server remains the shared source of truth; local storage is a recovery queue for offline activity. Visible clients refresh every two minutes, immediately on focus/return to foreground, and skip refresh while parent timeline details or editors are open. During practice, local checkpoints remain five seconds apart, while cloud updates are limited to one per minute and still save immediately at punch-in and punch-out. Failed transient saves retry with capped backoff; permanent validation and size errors are shown without retrying.
+
+## Compact family state (2026-10-23)
+
+The shared state had grown to about 1.86 MB, mostly because detector event objects repeated the same field names. The Worker rejected state writes over 1 MB, and D1 rows are limited to 2 MB. A dictionary plus row representation preserves all event values while reducing the current state to about 866 KB. Parent state reads return the stored JSON directly to avoid parsing and serializing the full document inside the Worker.
+

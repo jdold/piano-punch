@@ -2,14 +2,68 @@ const ASSETS = __ASSETS__;
 const ACCESS_AUD = '472b0c23f85f568f6a50e844b07bde90867e68126247c1213be06c89f73cefba';
 const ACCESS_ISSUER = 'https://jakedold07.cloudflareaccess.com';
 const PARENT_EMAILS = new Set(['jakedold07@gmail.com', 'jdold@apexdp.com']);
+const ACCESS_CERT_TTL_MS = 10 * 60_000;
+let accessCertsCache = null;
+let accessCertsExpiresAt = 0;
+let accessCertsPromise = null;
+const accessPublicKeys = new Map();
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
 }
 
+function jsonRaw(text, status = 200) {
+  return new Response(text, { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
+}
+
 function decodePart(value) {
   const normalized = value.replace(/-/g, '+').replace(/_/g, '/');
   return JSON.parse(atob(normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')));
+}
+
+async function loadAccessCerts(force = false) {
+  if (!force && accessCertsCache && Date.now() < accessCertsExpiresAt) return accessCertsCache;
+  if (accessCertsPromise) return accessCertsPromise;
+
+  const pending = (async () => {
+    const response = await fetch(`${ACCESS_ISSUER}/cdn-cgi/access/certs`);
+    if (!response.ok) throw new Error('Access certificates are unavailable');
+    const certs = (await response.json()).public_certs;
+    if (!Array.isArray(certs)) throw new Error('Access certificates are invalid');
+    accessCertsCache = certs;
+    accessCertsExpiresAt = Date.now() + ACCESS_CERT_TTL_MS;
+    accessPublicKeys.clear();
+    return certs;
+  })();
+  accessCertsPromise = pending;
+  try {
+    return await pending;
+  } finally {
+    if (accessCertsPromise === pending) accessCertsPromise = null;
+  }
+}
+
+async function accessPublicKey(kid) {
+  let certs = await loadAccessCerts();
+  let cert = certs.find((item) => item.kid === kid);
+  if (!cert) {
+    certs = await loadAccessCerts(true);
+    cert = certs.find((item) => item.kid === kid);
+  }
+  if (!cert?.cert) return null;
+
+  if (!accessPublicKeys.has(kid)) {
+    const pending = crypto.subtle.importKey('spki', certificateSpki(pemBytes(cert.cert)), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+    accessPublicKeys.set(kid, pending);
+  }
+  try {
+    const key = await accessPublicKeys.get(kid);
+    accessPublicKeys.set(kid, key);
+    return key;
+  } catch (error) {
+    accessPublicKeys.delete(kid);
+    throw error;
+  }
 }
 
 async function authorized(request) {
@@ -21,11 +75,8 @@ async function authorized(request) {
     if (header.alg !== 'RS256' || !header.kid || claims.iss !== ACCESS_ISSUER || !PARENT_EMAILS.has(claims.email?.toLowerCase()) || Number(claims.exp) <= Date.now() / 1000 || Number(claims.nbf || 0) > Date.now() / 1000) return false;
     const aud = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
     if (!aud.includes(ACCESS_AUD)) return false;
-    const keyResponse = await fetch(`${ACCESS_ISSUER}/cdn-cgi/access/certs`);
-    if (!keyResponse.ok) return false;
-    const key = (await keyResponse.json()).public_certs?.find((item) => item.kid === header.kid);
-    if (!key?.cert) return false;
-    const publicKey = await crypto.subtle.importKey('spki', certificateSpki(pemBytes(key.cert)), { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+    const publicKey = await accessPublicKey(header.kid);
+    if (!publicKey) return false;
     const signature = Uint8Array.from(atob(sig.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
     return crypto.subtle.verify('RSASSA-PKCS1-v1_5', publicKey, signature, new TextEncoder().encode(`${head}.${body}`));
   } catch { return false; }
@@ -59,6 +110,43 @@ function familyLinkAuthorized(request, env) {
   let mismatch = 0;
   for (let i = 0; i < expected.length; i++) mismatch |= expected.charCodeAt(i) ^ supplied.charCodeAt(i);
   return mismatch === 0;
+}
+
+function packSessionEventLog(session) {
+  if (!Array.isArray(session.events) || session.events.length === 0 || session.eventLog?.v === 1) return session;
+  const states = [];
+  const reasons = [];
+  const stateIndexes = new Map();
+  const reasonIndexes = new Map();
+  for (const event of session.events) {
+    if (Object.prototype.hasOwnProperty.call(event, 'state') && !stateIndexes.has(event.state)) {
+      stateIndexes.set(event.state, states.length);
+      states.push(event.state);
+    }
+    if (Object.prototype.hasOwnProperty.call(event, 'reason') && !reasonIndexes.has(event.reason)) {
+      reasonIndexes.set(event.reason, reasons.length);
+      reasons.push(event.reason);
+    }
+  }
+  const rows = session.events.map((event) => [
+    Object.prototype.hasOwnProperty.call(event, 'at') ? event.at : null,
+    Object.prototype.hasOwnProperty.call(event, 'state') ? stateIndexes.get(event.state) : -1,
+    Object.prototype.hasOwnProperty.call(event, 'reason') ? reasonIndexes.get(event.reason) : -1,
+    Object.fromEntries(Object.entries(event).filter(([key]) => !['at', 'state', 'reason'].includes(key))),
+  ]);
+  return { ...session, events: [], eventLog: { v: 1, states, reasons, rows } };
+}
+
+function packStateEventLogs(state) {
+  if (!Array.isArray(state.sessions)) return state;
+  return { ...state, sessions: state.sessions.map(packSessionEventLog) };
+}
+
+function validEventLog(log) {
+  return log == null || (log.v === 1
+    && Array.isArray(log.states) && log.states.length <= 100
+    && Array.isArray(log.reasons) && log.reasons.length <= 20_000
+    && Array.isArray(log.rows) && log.rows.length <= 20_000);
 }
 
 function addKidPracticeAwards(state) {
@@ -120,18 +208,24 @@ function validateKidSession(session, ids) {
   if (!session || typeof session.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(session.id) || !ids.has(session.childId)) return false;
   if (!['complete', 'interrupted'].includes(session.status) || !/^\d{4}-\d{2}-\d{2}$/.test(session.date)) return false;
   const start = Date.parse(session.startedAt), end = Date.parse(session.endedAt);
-  return Number.isFinite(start) && Number.isFinite(end) && end >= start && end - start <= 24 * 60 * 60_000 && Number.isFinite(session.creditedMs) && session.creditedMs >= 0 && session.creditedMs <= end - start && Array.isArray(session.events) && session.events.length <= 20_000;
+  return Number.isFinite(start) && Number.isFinite(end) && end >= start && end - start <= 24 * 60 * 60_000 && Number.isFinite(session.creditedMs) && session.creditedMs >= 0 && session.creditedMs <= end - start && Array.isArray(session.events) && session.events.length <= 20_000 && validEventLog(session.eventLog);
 }
 
 async function kidApi(request, env, url) {
   if (!env.DB) return json({ error: 'Database is not configured.' }, 503);
-  const row = await env.DB.prepare('SELECT state_json, revision FROM app_state WHERE id = 1').first();
-  if (!row) return json({ error: 'Family setup is incomplete. Ask a parent to open Parent Controls first.' }, 503);
-  const current = JSON.parse(row.state_json);
-  if (request.method === 'GET' && url.pathname === '/api/kid-data') return json({ state: { ...current, parentMode: false }, revision: row.revision });
   if (request.method === 'PUT' && url.pathname === '/api/kid-data') {
     const length = Number(request.headers.get('content-length') || 0);
     if (length > 1_000_000) return json({ error: 'State is too large.' }, 413);
+  }
+  if (request.method === 'GET' && url.pathname === '/api/kid-data') {
+    const row = await env.DB.prepare("SELECT json_set(state_json, '$.parentMode', false) AS state_json, revision FROM app_state WHERE id = 1").first();
+    if (!row) return json({ error: 'Family setup is incomplete. Ask a parent to open Parent Controls first.' }, 503);
+    return jsonRaw(`{"state":${row.state_json},"revision":${row.revision}}`);
+  }
+  const row = await env.DB.prepare('SELECT state_json, revision FROM app_state WHERE id = 1').first();
+  if (!row) return json({ error: 'Family setup is incomplete. Ask a parent to open Parent Controls first.' }, 503);
+  const current = JSON.parse(row.state_json);
+  if (request.method === 'PUT' && url.pathname === '/api/kid-data') {
     let input; try { input = await request.json(); } catch { return json({ error: 'Invalid JSON.' }, 400); }
     if (!input?.state || !Number.isInteger(input.revision) || input.revision !== row.revision) return json({ error: 'Family data changed. Refresh to continue.', revision: row.revision }, 409);
     const proposed = input.state;
@@ -195,7 +289,7 @@ async function kidApi(request, env, url) {
       if (balance - reserved < request.cost) return json({ error: 'Not enough available points.' }, 400);
       nextRedemptions.push(request);
     }
-    const updated = { ...current, children: nextChildren, sessions: nextSessions, currentSession: nextCurrent, redemptions: nextRedemptions, ledger: candidateLedger, parentMode: false };
+    const updated = packStateEventLogs({ ...current, children: nextChildren, sessions: nextSessions, currentSession: nextCurrent, redemptions: nextRedemptions, ledger: candidateLedger, parentMode: false });
     const result = await env.DB.prepare(`UPDATE app_state SET state_json = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1 AND revision = ? RETURNING revision`).bind(JSON.stringify(updated), row.revision).first();
     if (!result) return json({ error: 'Family data changed. Refresh to continue.' }, 409);
     return json({ state: { ...updated, currentSession: null }, revision: result.revision });
@@ -256,7 +350,9 @@ async function api(request, env) {
   if (!env.DB) return json({ error: 'Database is not configured.' }, 503);
   if (request.method === 'GET' && url.pathname === '/api/state') {
     const row = await env.DB.prepare('SELECT state_json, revision FROM app_state WHERE id = 1').first();
-    return json(row ? { state: JSON.parse(row.state_json), revision: row.revision } : { state: null, revision: 0 });
+    return row
+      ? jsonRaw(`{"state":${row.state_json},"revision":${row.revision}}`)
+      : jsonRaw('{"state":null,"revision":0}');
   }
   if (request.method === 'PUT' && url.pathname === '/api/state') {
     const length = Number(request.headers.get('content-length') || 0);
@@ -293,3 +389,4 @@ export default {
     return new Response(request.method === 'HEAD' ? null : bytes, { headers: { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Permissions-Policy': 'microphone=(self)', 'Content-Type': asset.contentType, 'Cache-Control': appEntry ? 'no-cache' : 'public, max-age=31536000, immutable' } });
   },
 };
+

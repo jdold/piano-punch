@@ -10,17 +10,20 @@ npm test
 npm run build
 ```
 
-`npm run dev:worker` builds the UI and runs the bundled Worker locally. `npm run deploy` builds and deploys it with Wrangler. The checked-in Worker config binds the provisioned D1 database, but the app does not currently read or write it.
+`npm run dev:worker` builds the UI and runs the bundled Worker locally. `npm run deploy` builds and deploys it with Wrangler. The Worker uses the configured D1 database and private R2 bucket.
 
-The app loads/saves family state through `/api/state`; localStorage is retained as a recovery copy. The API requires a valid Cloudflare Access JWT for the configured parent identity and uses a revision check to prevent silent cross-device overwrites.
+The app loads/saves family state through `/api/state`; localStorage is retained as a recovery copy. Session event timelines are packed into a compact per-session representation for local storage and cloud requests, then expanded in the browser before rendering. This preserves the full timeline while keeping state below the Worker request and D1 row limits.
+
+Visible clients refresh at most every two minutes, refresh immediately when brought back to the foreground, and skip refresh while a parent timeline or editor is open. Practice checkpoints still save locally every five seconds; active-session cloud updates are sent once per minute, with immediate saves at punch-in and punch-out. The API requires a valid Cloudflare Access JWT for the configured parent identity and uses a revision check to prevent silent cross-device overwrites.
 
 ## Cloudflare resources
 
 - Astro 6 produces a static site; `scripts/bundle-worker.mjs` bundles generated assets into `dist/worker.js` for deployment as a Worker module.
-- The deployed preview is currently protected by Cloudflare Access at the whole-site level. Do not add a public kid URL exception until child-link tokens are checked by Worker API routes.
-- Wrangler binds the `piano-punch` D1 database as `DB`; `app_state` stores the family state document. The initial relational schema remains available for a future normalized API.
+- Parent pages and APIs are protected by Cloudflare Access. The `/kids` entry point and kid API use a separate family-link key, which the Worker verifies on kid requests.
+- Wrangler binds the `piano-punch` D1 database as `DB`; `app_state` stores the shared family state document and revision. The initial relational schema remains available for a future normalized API.
 - The D1 schema is in `migrations/`; keep schema changes as new numbered migrations. Migration `0002_app_state.sql` is applied to production.
-- R2 is not enabled yet; recordings are not captured or uploaded. Enable R2 and create/bind the private bucket before shipping recording support.
+- Wrangler binds the private `piano-punch-recordings` R2 bucket as `RECORDINGS` for optional practice recordings.
+- Session event timelines are packed for local and cloud persistence, then expanded by the browser. The current family state was about 1.86 MB before packing and about 866 KB afterward; all event details are preserved.
 
 Before applying a migration remotely, confirm the active Cloudflare account and inspect the SQL. Use Wrangler's D1 migration workflow; do not edit production tables manually. The initial schema was provisioned during project setup and uses `CREATE TABLE IF NOT EXISTS` statements.
 
@@ -28,10 +31,11 @@ Before applying a migration remotely, confirm the active Cloudflare account and 
 
 1. Confirm `npm test` and `npm run build` pass.
 2. Review Wrangler bindings against the deployed Worker and regenerate types from the current config.
-3. Keep Cloudflare Access enabled for `piano-punch.jakedold07.workers.dev`, with the exact parent email allow rule; keep Workers.dev preview URLs disabled.
-4. Add parent/child authorization on every write route before adding APIs.
+3. Keep Cloudflare Access enabled for the parent app and Worker routes, with the exact parent email allow rule; keep Workers.dev preview URLs disabled.
+4. Keep parent JWT and kid family-link authorization on every write route.
 5. Apply reviewed D1 migrations and verify the deployed Worker uses the intended database.
 6. Deploy only after the release gate in `docs/ROADMAP.md` is met; test a preview before production.
 7. Verify microphone permission, backgrounding, lock-screen, call interruption, and recovery on iPhone Safari.
 
-There are no credentials in this repository. Store any future secrets in Cloudflare's secret-management tools, never in source files or committed configuration. Keep Cloudflare Access enabled on the Worker before deploying from a connected account.
+There are no credentials in this repository. Store secrets in Cloudflare's secret-management tools, never in source files or committed configuration. Keep Cloudflare Access enabled on the parent app and APIs before deploying from a connected account.
+
