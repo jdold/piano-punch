@@ -14,7 +14,7 @@ npm run build
 
 The app loads/saves family state through `/api/state`; localStorage is retained as a recovery copy. Session event timelines are packed into a compact per-session representation for local storage and cloud requests, then expanded in the browser before rendering. This preserves the full timeline while keeping state below the Worker request and D1 row limits.
 
-Visible clients refresh at most every two minutes, refresh immediately when brought back to the foreground, and skip refresh while a parent timeline or editor is open. Practice checkpoints still save locally every five seconds; active-session cloud updates are sent once per minute, with immediate saves at punch-in and punch-out. The API requires a valid Cloudflare Access JWT for the configured parent identity and uses a revision check to prevent silent cross-device overwrites.
+Visible clients refresh every ten seconds during a practice session and every two minutes while idle. Refreshes also run when a page returns to the foreground and pause while a parent timeline or editor is open. Practice checkpoints still save locally every five seconds, and active-session cloud checkpoints keep the previous five-second cadence; punch-in and punch-out still save promptly. The API requires a valid Cloudflare Access JWT for the configured parent identity and uses a revision check to prevent silent cross-device overwrites.
 
 ## Cloudflare resources
 

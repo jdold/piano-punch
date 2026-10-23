@@ -10,7 +10,7 @@ The AudioWorklet moves microphone frames off the UI thread. A local FFT feature 
 
 ## Data and access
 
-The app stores shared family state in D1 and keeps localStorage as an offline recovery copy. Access JWT certificates and imported verification keys are cached per Worker isolate for ten minutes; every parent request still checks the JWT signature, audience, issuer, expiry, and allowed email. Session event timelines are packed for local and cloud persistence and expanded in the browser before use. The packed representation retains every event while reducing repeated field names. Active practice checkpoints save locally every five seconds and sync to the cloud once per minute; refreshes are two minutes apart and pause while parent timeline details or editors are open.
+The app stores shared family state in D1 and keeps localStorage as an offline recovery copy. Access JWT certificates and imported verification keys are cached per Worker isolate for ten minutes; every parent request still checks the JWT signature, audience, issuer, expiry, and allowed email. Session event timelines are packed for local and cloud persistence and expanded in the browser before use. The packed representation retains every event while reducing repeated field names. During practice, cloud refreshes run every ten seconds and cloud checkpoints every five seconds, preserving the previous active-session cadence. When there is no active session, refreshes run every two minutes. Refreshes pause while parent timeline details or editors are open.
 
 ## Point rules
 

@@ -3,10 +3,9 @@ import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
 import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, mergeParentActivity, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles, recoverInterruptedSession } from './piano-state.js';
 import { packCloudState, unpackCloudState, hasLegacyCloudEvents } from './cloud-state.js';
+import { ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS, cloudRefreshIntervalMs } from './cloud-sync-policy.js';
 
 let state = loadState();
-const CLOUD_REFRESH_INTERVAL_MS = 120_000;
-const SESSION_CLOUD_SYNC_INTERVAL_MS = 60_000;
 const kidMode = location.pathname === '/kids' || location.pathname === '/kids/';
 function readFamilyKey() {
   if (!kidMode) return '';
@@ -155,6 +154,15 @@ async function refreshCloudState() {
   } finally {
     cloudRefreshInFlight = false;
   }
+}
+
+function scheduleCloudRefresh() {
+  clearTimeout(cloudRefreshTimer);
+  cloudRefreshTimer = setTimeout(async () => {
+    cloudRefreshTimer = null;
+    await refreshCloudState();
+    scheduleCloudRefresh();
+  }, cloudRefreshIntervalMs(state));
 }
 
 async function hydrateCloudState() {
@@ -463,6 +471,7 @@ async function beginPractice() {
   const extraStepMs = Math.max(1, child().pointRules.extraEveryMinutes || 10) * 60_000;
   const goalMs = child().goalMinutes * 60_000;
   state.currentSession = { id: crypto.randomUUID(), childId: selectedChild, startedAt: startIso, checkpointAt: startIso, date: dayKey(), recoveryRequired: false, elapsedMs: 0, creditedMs: 0, events: [], goalCelebrated: false, extraUnitsSettled: Math.floor(Math.max(0, priorMs - goalMs) / extraStepMs) };
+  scheduleCloudRefresh();
   lastSessionCloudSyncAt = performance.now();
   persist();
   requestScreenWakeLock();
@@ -481,7 +490,7 @@ async function beginPractice() {
       state.currentSession.events = snapshot.events;
       state.currentSession.checkpointAt = new Date().toISOString();
       saveState(state);
-      if (now - lastSessionCloudSyncAt >= SESSION_CLOUD_SYNC_INTERVAL_MS) {
+      if (now - lastSessionCloudSyncAt >= ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS) {
         lastSessionCloudSyncAt = now;
         queueCloudSync();
       }
@@ -694,6 +703,7 @@ function finishPractice() {
   audioSuppressed = false;
   const before=points.ledgerBalance(state.ledger,session.childId);
   state.sessions.push(session); state.currentSession = null;
+  scheduleCloudRefresh();
   settlePracticeDay(state, session.childId, session.date);
   $('#permission-message').hidden = true;
   timer = null; startIso = null; microphoneStatus = 'idle'; releaseScreenWakeLock();
@@ -976,6 +986,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     render();
   }
   $('#reward-cancel').addEventListener('click', resetRewardForm);
-  cloudRefreshTimer = setInterval(refreshCloudState, CLOUD_REFRESH_INTERVAL_MS);
+  scheduleCloudRefresh();
 });
 
