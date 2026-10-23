@@ -10,7 +10,7 @@ The AudioWorklet moves microphone frames off the UI thread. A local FFT feature 
 
 ## Data and access
 
-The app stores shared family state in D1 and keeps localStorage as an offline recovery copy. Access JWT certificates and imported verification keys are cached per Worker isolate for ten minutes; every parent request still checks the JWT signature, audience, issuer, expiry, and allowed email. Session event timelines are packed for local and cloud persistence and expanded in the browser before use. The packed representation retains every event while reducing repeated field names. During practice, cloud refreshes run every ten seconds and cloud checkpoints every five seconds, preserving the previous active-session cadence. When there is no active session, refreshes run every two minutes. Refreshes pause while parent timeline details or editors are open.
+The app stores shared family state in D1 and keeps localStorage as an offline recovery copy. Access JWT certificates and imported verification keys are cached per Worker isolate for ten minutes; every parent request still checks the JWT signature, audience, issuer, expiry, and allowed email. Session event timelines are packed for local and cloud persistence and expanded in the browser before use. The packed representation retains every event while reducing repeated field names. Shared state is fetched during page initialization, without background refresh polling. During practice, local and cloud checkpoints continue every five seconds, with immediate saves at punch-in and punch-out. If another device changes family data while a page remains open, reload that page to fetch the latest version.
 
 ## Point rules
 
@@ -25,7 +25,7 @@ The app stores shared family state in D1 and keeps localStorage as an offline re
 
 The live practice UI celebrates as soon as verified active time reaches the daily goal, before the child necessarily punches out. A later page close can recover that same session with `status: interrupted`. A persisted `goalCelebrated` flag is therefore authoritative evidence of a qualifying practice day: streaks and goal awards must retain it, and kid/parent sync merges must not discard a local celebration when the server has a less complete interrupted copy. Sessions interrupted before the celebration remain subject to parent review and do not qualify.
 
-The server remains the shared source of truth; local storage is a recovery queue for offline activity. Visible clients refresh every two minutes, immediately on focus/return to foreground, and skip refresh while parent timeline details or editors are open. During practice, local checkpoints remain five seconds apart, while cloud updates are limited to one per minute and still save immediately at punch-in and punch-out. Failed transient saves retry with capped backoff; permanent validation and size errors are shown without retrying.
+The server remains the shared source of truth; local storage is a recovery queue for offline activity. The app loads shared state on page initialization and otherwise does not poll for updates. During practice, local checkpoints and cloud updates remain five seconds apart, with immediate saves at punch-in and punch-out. Failed transient saves retry with capped backoff; permanent validation and size errors are shown without retrying.
 
 ## Compact family state (2026-10-23)
 

@@ -1,20 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS,
-  ACTIVE_SESSION_REFRESH_INTERVAL_MS,
-  IDLE_REFRESH_INTERVAL_MS,
-  cloudRefreshIntervalMs,
-} from '../src/lib/cloud-sync-policy.js';
+import { readFile } from 'node:fs/promises';
+import { ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS } from '../src/lib/cloud-sync-policy.js';
 
-test('active practice keeps the previous refresh and cloud checkpoint cadence', () => {
-  assert.equal(cloudRefreshIntervalMs({ currentSession: { id: 'session-1' } }), 10_000);
-  assert.equal(ACTIVE_SESSION_REFRESH_INTERVAL_MS, 10_000);
+test('practice keeps five-second cloud checkpoints without background state polling', async () => {
   assert.equal(ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS, 5_000);
-});
-
-test('idle pages switch to the lower refresh frequency', () => {
-  assert.equal(cloudRefreshIntervalMs({ currentSession: null }), 120_000);
-  assert.equal(cloudRefreshIntervalMs({}), 120_000);
-  assert.equal(cloudRefreshIntervalMs(null), 120_000);
+  const app = await readFile(new URL('../src/lib/app.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(app, /scheduleCloudRefresh|refreshCloudState|cloudRefreshIntervalMs|IDLE_REFRESH_INTERVAL_MS/);
 });
