@@ -2,6 +2,7 @@ const ASSETS = __ASSETS__;
 const ACCESS_AUD = '472b0c23f85f568f6a50e844b07bde90867e68126247c1213be06c89f73cefba';
 const ACCESS_ISSUER = 'https://jakedold07.cloudflareaccess.com';
 const PARENT_EMAILS = new Set(['jakedold07@gmail.com', 'jdold@apexdp.com']);
+const MAX_FAMILY_STATE_BYTES = 4_000_000;
 const ACCESS_CERT_TTL_MS = 10 * 60_000;
 let accessCertsCache = null;
 let accessCertsExpiresAt = 0;
@@ -104,12 +105,13 @@ function certificateSpki(der) {
 }
 
 function familyLinkAuthorized(request, env) {
-  const expected = env.KID_LINK_KEY;
   const supplied = request.headers.get('X-Piano-Family-Key') || '';
-  if (!expected || expected.length !== supplied.length) return false;
-  let mismatch = 0;
-  for (let i = 0; i < expected.length; i++) mismatch |= expected.charCodeAt(i) ^ supplied.charCodeAt(i);
-  return mismatch === 0;
+  return [env.KID_LINK_KEY, env.KID_LINK_KEY_SECONDARY].some((expected) => {
+    if (!expected || expected.length !== supplied.length) return false;
+    let mismatch = 0;
+    for (let i = 0; i < expected.length; i++) mismatch |= expected.charCodeAt(i) ^ supplied.charCodeAt(i);
+    return mismatch === 0;
+  });
 }
 
 function packSessionEventLog(session) {
@@ -211,11 +213,54 @@ function validateKidSession(session, ids) {
   return Number.isFinite(start) && Number.isFinite(end) && end >= start && end - start <= 24 * 60 * 60_000 && Number.isFinite(session.creditedMs) && session.creditedMs >= 0 && session.creditedMs <= end - start && Array.isArray(session.events) && session.events.length <= 20_000 && validEventLog(session.eventLog);
 }
 
+function validateActiveKidSession(session) {
+  if (!session || typeof session.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(session.id)
+    || typeof session.childId !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(session.date || '')) return false;
+  const started = Date.parse(session.startedAt);
+  return Number.isFinite(started)
+    && Number.isFinite(session.elapsedMs) && session.elapsedMs >= 0 && session.elapsedMs <= 24 * 60 * 60_000
+    && Number.isFinite(session.creditedMs) && session.creditedMs >= 0 && session.creditedMs <= session.elapsedMs
+    && Array.isArray(session.events) && session.events.length <= 20_000
+    && validEventLog(session.eventLog);
+}
+
 async function kidApi(request, env, url) {
   if (!env.DB) return json({ error: 'Database is not configured.' }, 503);
+  if (request.method === 'PUT' && url.pathname === '/api/kid-checkpoint') {
+    const length = Number(request.headers.get('content-length') || 0);
+    if (length > MAX_FAMILY_STATE_BYTES) return json({ error: 'Family data exceeds the 4 MB sync limit.' }, 413);
+    let input;
+    try { input = await request.json(); } catch { return json({ error: 'Invalid JSON.' }, 400); }
+    const session = input?.currentSession;
+    if (!Number.isInteger(input?.revision) || input.revision < 0 || !validateActiveKidSession(session)) return json({ error: 'Invalid active session.' }, 400);
+    const result = await env.DB.prepare(`UPDATE app_state
+      SET state_json = json_set(state_json, '$.currentSession', json(?)), revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+      WHERE id = 1 AND revision = ?
+        AND EXISTS (SELECT 1 FROM json_each(app_state.state_json, '$.children') AS child WHERE json_extract(child.value, '$.id') = ?)
+        AND (
+          COALESCE(json_type(app_state.state_json, '$.currentSession'), 'null') = 'null'
+          OR (
+            json_extract(app_state.state_json, '$.currentSession.id') = ?
+            AND json_extract(app_state.state_json, '$.currentSession.childId') = ?
+            AND json_extract(app_state.state_json, '$.currentSession.startedAt') = ?
+            AND COALESCE(CAST(json_extract(app_state.state_json, '$.currentSession.elapsedMs') AS REAL), 0) <= ?
+            AND COALESCE(CAST(json_extract(app_state.state_json, '$.currentSession.creditedMs') AS REAL), 0) <= ?
+          )
+        )
+      RETURNING revision`).bind(
+      JSON.stringify(session), input.revision, session.childId,
+      session.id, session.childId, session.startedAt, session.elapsedMs, session.creditedMs,
+    ).first();
+    if (!result) {
+      const latest = await env.DB.prepare('SELECT revision FROM app_state WHERE id = 1').first();
+      if (!latest) return json({ error: 'Family setup is incomplete.' }, 503);
+      return json({ error: 'Family data changed or the active session was replaced.', revision: latest.revision }, 409);
+    }
+    return json({ revision: result.revision });
+  }
   if (request.method === 'PUT' && url.pathname === '/api/kid-data') {
     const length = Number(request.headers.get('content-length') || 0);
-    if (length > 1_000_000) return json({ error: 'State is too large.' }, 413);
+    if (length > MAX_FAMILY_STATE_BYTES) return json({ error: 'Family data exceeds the 4 MB sync limit.' }, 413);
   }
   if (request.method === 'GET' && url.pathname === '/api/kid-data') {
     const row = await env.DB.prepare("SELECT json_set(state_json, '$.parentMode', false) AS state_json, revision FROM app_state WHERE id = 1").first();
@@ -292,7 +337,7 @@ async function kidApi(request, env, url) {
     const updated = packStateEventLogs({ ...current, children: nextChildren, sessions: nextSessions, currentSession: nextCurrent, redemptions: nextRedemptions, ledger: candidateLedger, parentMode: false });
     const result = await env.DB.prepare(`UPDATE app_state SET state_json = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1 AND revision = ? RETURNING revision`).bind(JSON.stringify(updated), row.revision).first();
     if (!result) return json({ error: 'Family data changed. Refresh to continue.' }, 409);
-    return json({ state: { ...updated, currentSession: null }, revision: result.revision });
+    return json({ revision: result.revision });
   }
   const recordingMatch = url.pathname.match(/^\/api\/kid-recordings\/([0-9a-f-]{36})$/i);
   if (recordingMatch && env.RECORDINGS) {
@@ -319,7 +364,7 @@ async function kidApi(request, env, url) {
 
 async function api(request, env) {
   const url = new URL(request.url);
-  if (url.pathname === '/api/kid-data' || url.pathname.startsWith('/api/kid-recordings/')) {
+  if (url.pathname === '/api/kid-data' || url.pathname === '/api/kid-checkpoint' || url.pathname.startsWith('/api/kid-recordings/')) {
     if (!familyLinkAuthorized(request, env)) return json({ error: 'Open the family practice link to continue.' }, 401);
     return kidApi(request, env, url);
   }
@@ -356,7 +401,7 @@ async function api(request, env) {
   }
   if (request.method === 'PUT' && url.pathname === '/api/state') {
     const length = Number(request.headers.get('content-length') || 0);
-    if (length > 1_000_000) return json({ error: 'State is too large.' }, 413);
+    if (length > MAX_FAMILY_STATE_BYTES) return json({ error: 'Family data exceeds the 4 MB sync limit.' }, 413);
     let input;
     try { input = await request.json(); } catch { return json({ error: 'Invalid JSON.' }, 400); }
     const s = input?.state;

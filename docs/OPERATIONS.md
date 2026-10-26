@@ -14,7 +14,7 @@ npm run build
 
 The app loads/saves family state through `/api/state`; localStorage is retained as a recovery copy. Session event timelines are packed into a compact per-session representation for local storage and cloud requests, then expanded in the browser before rendering. This preserves the full timeline while keeping state below the Worker request and D1 row limits.
 
-The app fetches shared state during page initialization and does not poll for updates in the background. If a page stays open and another device changes family data, reload the page to fetch the latest version. Practice checkpoints still save locally every five seconds, and active-session cloud checkpoints keep the previous five-second cadence; punch-in and punch-out still save promptly. The API requires a valid Cloudflare Access JWT for the configured parent identity and uses a revision check to prevent silent cross-device overwrites.
+The app fetches shared state during page initialization and does not poll for updates in the background. If a page stays open and another device changes family data, reload the page to fetch the latest version. Practice checkpoints still save locally every five seconds; cloud checkpoints send only the active session every thirty seconds. Punch-in, punch-out, and family-data changes still save promptly through the full-state API. The API requires a valid Cloudflare Access JWT for the configured parent identity and uses a revision check to prevent silent cross-device overwrites.
 
 ## Cloudflare resources
 
@@ -23,7 +23,7 @@ The app fetches shared state during page initialization and does not poll for up
 - Wrangler binds the `piano-punch` D1 database as `DB`; `app_state` stores the shared family state document and revision. The initial relational schema remains available for a future normalized API.
 - The D1 schema is in `migrations/`; keep schema changes as new numbered migrations. Migration `0002_app_state.sql` is applied to production.
 - Wrangler binds the private `piano-punch-recordings` R2 bucket as `RECORDINGS` for optional practice recordings.
-- Session event timelines are packed for local and cloud persistence, then expanded by the browser. The current family state was about 1.86 MB before packing and about 866 KB afterward; all event details are preserved.
+- Session event timelines are packed for local and cloud persistence, then expanded by the browser. All event details are preserved. Full-state API writes allow up to 4 MB so growing family history remains writable.
 
 Before applying a migration remotely, confirm the active Cloudflare account and inspect the SQL. Use Wrangler's D1 migration workflow; do not edit production tables manually. The initial schema was provisioned during project setup and uses `CREATE TABLE IF NOT EXISTS` statements.
 
@@ -32,7 +32,7 @@ Before applying a migration remotely, confirm the active Cloudflare account and 
 1. Confirm `npm test` and `npm run build` pass.
 2. Review Wrangler bindings against the deployed Worker and regenerate types from the current config.
 3. Keep Cloudflare Access enabled for the parent app and Worker routes, with the exact parent email allow rule; keep Workers.dev preview URLs disabled.
-4. Keep parent JWT and kid family-link authorization on every write route.
+4. Keep parent JWT and both kid family-link keys authorized on every write route.
 5. Apply reviewed D1 migrations and verify the deployed Worker uses the intended database.
 6. Deploy only after the release gate in `docs/ROADMAP.md` is met; test a preview before production.
 7. Verify microphone permission, backgrounding, lock-screen, call interruption, and recovery on iPhone Safari.

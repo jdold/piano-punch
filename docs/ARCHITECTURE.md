@@ -24,7 +24,7 @@ Astro builds the static page and browser modules. The Worker serves them and own
 
 Practice and reward state is stored as one JSON document in D1 with a revision number. Writes include the revision last read, so the Worker rejects stale updates instead of silently replacing newer activity. The browser keeps full session event objects while rendering and applying business rules. At the storage boundary, repetitive event fields are packed into per-session dictionaries and rows; the browser expands them on load. This representation preserves event values and history while reducing local and cloud state size.
 
-Shared state is fetched during page initialization; clients do not poll for changes in the background. If another device changes family data while a page is open, reload that page to fetch the latest version. During practice, local checkpoints and cloud checkpoints continue every five seconds, with immediate saves at punch-in and punch-out. Failed transient saves use capped backoff, and revision conflicts are merged before retrying.
+Shared state is fetched during page initialization; clients do not poll for changes in the background. If another device changes family data while a page is open, reload that page to fetch the latest version. During practice, local recovery checkpoints continue every five seconds. The cloud stores only the active-session checkpoint every thirty seconds; punch-in, punch-out, and family-data changes still use the revision-checked full-state write. Failed transient saves use capped backoff, and revision conflicts are merged before retrying.
 
 ## Audio and timer
 

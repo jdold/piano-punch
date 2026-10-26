@@ -3,7 +3,7 @@ import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
 import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, mergeParentActivity, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles, recoverInterruptedSession } from './piano-state.js';
 import { packCloudState, unpackCloudState, hasLegacyCloudEvents } from './cloud-state.js';
-import { ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS } from './cloud-sync-policy.js';
+import { ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS, LOCAL_SESSION_CHECKPOINT_INTERVAL_MS } from './cloud-sync-policy.js';
 
 let state = loadState();
 const kidMode = location.pathname === '/kids' || location.pathname === '/kids/';
@@ -35,6 +35,7 @@ let cloudReady = false;
 let cloudConflict = false;
 let cloudBaselineState = null;
 let cloudSyncTimer = null;
+let pendingCloudSyncMode = null;
 let cloudSyncChain = Promise.resolve();
 let cloudRetryCount = 0;
 let lastSessionCloudSyncAt = 0;
@@ -48,17 +49,26 @@ const localDateTimeValue = (value) => {
 
 function persist() { saveState(state); queueCloudSync(); render(); }
 
-function queueCloudSync() {
+function queueCloudSync({ checkpointOnly = false } = {}) {
   if (!cloudReady || cloudConflict) return;
+  if (checkpointOnly) pendingCloudSyncMode ??= 'checkpoint';
+  else pendingCloudSyncMode = 'full';
   clearTimeout(cloudSyncTimer);
   cloudSyncTimer = setTimeout(() => {
     cloudSyncTimer = null;
+    const syncMode = pendingCloudSyncMode || 'full';
+    pendingCloudSyncMode = null;
     const snapshot = structuredClone(state);
     cloudSyncChain = cloudSyncChain.then(async () => {
       let syncedSnapshot = snapshot;
       const headers = { 'Content-Type': 'application/json' };
       if (kidMode) headers['X-Piano-Family-Key'] = familyKey;
-      let response = await fetch(kidMode ? '/api/kid-data' : '/api/state', { method: 'PUT', headers, body: JSON.stringify({ state: packCloudState(snapshot), revision: cloudRevision }) });
+      let response;
+      if (kidMode && syncMode === 'checkpoint' && snapshot.currentSession) {
+        response = await fetch('/api/kid-checkpoint', { method: 'PUT', headers, body: JSON.stringify({ currentSession: snapshot.currentSession, revision: cloudRevision }) });
+      } else {
+        response = await fetch(kidMode ? '/api/kid-data' : '/api/state', { method: 'PUT', headers, body: JSON.stringify({ state: packCloudState(snapshot), revision: cloudRevision }) });
+      }
       if (response.status === 409 && kidMode) {
         // Parent edits or another device can advance the family revision during
         // practice. Merge append-only child activity and retry once.
@@ -130,7 +140,7 @@ function queueCloudSync() {
       if (navigator.onLine && !permanentError) {
         cloudRetryCount = Math.min(cloudRetryCount + 1, 7);
         const delay = Math.min(60_000, 1_000 * (2 ** cloudRetryCount));
-        setTimeout(() => queueCloudSync(), delay);
+        setTimeout(() => queueCloudSync({ checkpointOnly: syncMode === 'checkpoint' }), delay);
       }
     });
   }, 400);
@@ -449,7 +459,7 @@ async function beginPractice() {
     const snapshot=timer.tick(elapsedNow);
     checkPracticeMilestones(snapshot);
     const now = performance.now();
-    if (now - checkpointAt >= 5000) {
+    if (now - checkpointAt >= LOCAL_SESSION_CHECKPOINT_INTERVAL_MS) {
       checkpointAt = now;
       state.currentSession.elapsedMs = snapshot.elapsedMs;
       state.currentSession.creditedMs = snapshot.activeMs;
@@ -458,7 +468,7 @@ async function beginPractice() {
       saveState(state);
       if (now - lastSessionCloudSyncAt >= ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS) {
         lastSessionCloudSyncAt = now;
-        queueCloudSync();
+        queueCloudSync({ checkpointOnly: true });
       }
     }
     render();
@@ -933,11 +943,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       $('#child-welcome').hidden = true;
       $('#theme-picker').hidden = true;
       $('#theme-toggle').setAttribute('aria-expanded', 'false');
-      queueCloudSync();
       render();
     });
     $('#kid-link-message').textContent = 'Pick your name to open your practice space.';
-    queueCloudSync();
   } else {
     ensureFamilyProfiles(state);
     saveState(state);
