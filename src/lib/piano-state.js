@@ -178,6 +178,13 @@ export function currentStreak(state, child, today = dayKey()) {
   return streak;
 }
 
+// A running session is not in saved sessions until punch-out. Count the
+// just-reached goal once, but never double-count a day already completed.
+export function streakWithLiveGoal(state, child, date = dayKey()) {
+  const alreadyComplete = completedDates(state, child).includes(date);
+  return currentStreak(state, child, date) + (requiredPracticeDate(child, date) && !alreadyComplete ? 1 : 0);
+}
+
 export function settlePracticeDay(state, childId, date = dayKey(), additionalActiveMs = 0, qualifyingRunDays = undefined) {
   const child = state.children.find((c) => c.id === childId);
   const recordedMs = qualifyingSessionsForDay(state, childId, date).reduce((sum, session) => sum + session.creditedMs, 0);
