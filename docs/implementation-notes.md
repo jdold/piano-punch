@@ -31,3 +31,10 @@ The server remains the shared source of truth; local storage is a recovery queue
 
 The shared state had grown to about 1.86 MB, mostly because detector event objects repeated the same field names. The Worker rejected state writes over 1 MB, and D1 rows are limited to 2 MB. A dictionary plus row representation preserves all event values while reducing the current state to about 866 KB. Parent state reads return the stored JSON directly to avoid parsing and serializing the full document inside the Worker.
 
+
+## 2026-11-05 — Recurring streak rewards and mobile parent controls
+
+- Replaced the previous 3/5/7/14/30-day streak milestones with a configurable recurring reward, defaulting to 25 points at every 10 qualifying required practice days (10, 20, 30, and so on).
+- Existing child settings migrate to the new rule. Recalculating historical awards adds compensating ledger reversals rather than deleting past entries; editing the reward amount or interval uses distinct idempotency keys.
+- Live goal bonuses count the active session's newly completed required day once, without double-counting an already completed day.
+- Constrained parent-dashboard grid children and native date/time inputs to viewport width; made lesson and missed-practice forms full-width and adjusted mobile controls, including detector sliders. Slider readouts update while dragging; saving happens on release.

@@ -1,7 +1,7 @@
 import { SmartTimer, TIMER_STATES } from './smart-timer.js';
 import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
-import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, mergeParentActivity, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles, recoverInterruptedSession } from './piano-state.js';
+import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, mergeParentActivity, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles, recoverInterruptedSession, streakWithLiveGoal } from './piano-state.js';
 import { packCloudState, unpackCloudState, hasLegacyCloudEvents } from './cloud-state.js';
 import { ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS, LOCAL_SESSION_CHECKPOINT_INTERVAL_MS } from './cloud-sync-policy.js';
 
@@ -340,7 +340,8 @@ function fillSettings(c) {
   $('#practice-points').value = c.pointRules.practiceDay;
   $('#extra-step').value = c.pointRules.extraEveryMinutes;
   $('#extra-points').value = c.pointRules.extraMinutes;
-  for (const day of [3,5,7,14,30]) $(`#milestone-${day}`).value = c.pointRules.milestones[day] ?? 0;
+  $('#streak-interval').value = c.pointRules.streakEveryDays ?? 10;
+  $('#streak-bonus').value = c.pointRules.streakBonusPoints ?? 25;
   document.querySelectorAll('.weekday-check').forEach((input) => { input.checked = c.requiredWeekdays.includes(Number(input.value)); });
   fillDetectorSettings(c);
 }
@@ -647,7 +648,7 @@ function checkPracticeMilestones(snapshot) {
   if (!session.goalCelebrated && previousMs < goalMs && verifiedDailyMs >= goalMs) {
     session.goalCelebrated = true;
     session.events = snapshot.events;
-    const streak = currentStreak(state, c, session.date) + (requiredPracticeDate(c, session.date) ? 1 : 0);
+    const streak = streakWithLiveGoal(state, c, session.date);
     const before = points.ledgerBalance(state.ledger, c.id);
     settlePracticeDay(state, c.id, session.date, snapshot.activeMs, streak);
     const earned = points.ledgerBalance(state.ledger, c.id) - before;
@@ -660,7 +661,7 @@ function checkPracticeMilestones(snapshot) {
   const bonusUnits = Math.floor(Math.max(0, verifiedDailyMs - goalMs) / stepMs);
   if (bonusUnits > (session.extraUnitsSettled || 0)) {
     const before = points.ledgerBalance(state.ledger, c.id);
-    const streak = currentStreak(state, c, session.date) + (requiredPracticeDate(c, session.date) && verifiedDailyMs >= goalMs ? 1 : 0);
+    const streak = streakWithLiveGoal(state, c, session.date);
     settlePracticeDay(state, c.id, session.date, snapshot.activeMs, streak);
     session.extraUnitsSettled = bonusUnits;
     const earned = points.ledgerBalance(state.ledger, c.id) - before;
@@ -684,7 +685,7 @@ function finishPractice() {
   timer = null; startIso = null; microphoneStatus = 'idle'; releaseScreenWakeLock();
   const recordingPromise = stopAudio(); persist();
   const earned=points.ledgerBalance(state.ledger,session.childId)-before;
-  if(earned>0) showToast(`Lovely practice! +${earned} points earned${[3,5,7,14,30].includes(currentStreak(state,childFor(session.childId)))?' · streak badge unlocked':''}`);
+  if(earned>0) showToast(`Lovely practice! +${earned} points earned${(currentStreak(state,childFor(session.childId)) > 0 && currentStreak(state,childFor(session.childId)) % Math.max(1,Number(childFor(session.childId).pointRules.streakEveryDays)||10) === 0)?' · streak badge unlocked':''}`);
   recordingPromise.then(async (blob) => {
     if (!blob?.size) return;
     try {
@@ -737,7 +738,11 @@ function bindEvents() {
   });
   $('#detector-test-toggle').addEventListener('click', startCalibration);
   $('#instrument-input').addEventListener('change', () => { fillDetectorSettings(child(), true); persist(); });
-  document.querySelectorAll('#mic-volume, #pitch-low, #pitch-high, #harmonicity, #confidence').forEach((input) => input.addEventListener('input', () => { readDetectorControls(); persist(); }));
+  document.querySelectorAll('#mic-volume, #pitch-low, #pitch-high, #harmonicity, #confidence').forEach((input) => {
+    // Move smoothly on touch devices; save after the thumb is released.
+    input.addEventListener('input', readDetectorControls);
+    input.addEventListener('change', () => { readDetectorControls(); persist(); });
+  });
   $('#parent-toggle').addEventListener('click', () => {
     state.parentMode = !state.parentMode;
     $('#parent-toggle').setAttribute('aria-expanded', String(state.parentMode));
@@ -753,7 +758,8 @@ function bindEvents() {
     const c=child(); c.goalMinutes = Math.max(1, Number($('#goal-input').value) || 20); c.inactivitySeconds = Math.max(5, Number($('#threshold-input').value) || 20);
     c.pointRules.dailyGoal=Math.max(0,Number($('#daily-points').value)||0); c.pointRules.lesson=Math.max(0,Number($('#lesson-points').value)||0); c.pointRules.practiceDay=Math.max(0,Number($('#practice-points').value)||0);
     c.pointRules.extraEveryMinutes=Math.max(1,Number($('#extra-step').value)||10); c.pointRules.extraMinutes=Math.max(0,Number($('#extra-points').value)||0);
-    c.pointRules.milestones={3:Number($('#milestone-3').value)||0,5:Number($('#milestone-5').value)||0,7:Number($('#milestone-7').value)||0,14:Number($('#milestone-14').value)||0,30:Number($('#milestone-30').value)||0};
+    c.pointRules.streakEveryDays=Math.max(1,Math.trunc(Number($('#streak-interval').value)||10));
+    c.pointRules.streakBonusPoints=Math.max(0,Math.trunc(Number($('#streak-bonus').value)||0));
     c.recordingEnabled = $('#recording-enabled').checked;
     c.requiredWeekdays=[...document.querySelectorAll('.weekday-check:checked')].map((input)=>Number(input.value));
     recalculateChildAwards(state,c.id);

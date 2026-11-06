@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay, completedDates, currentStreak, recalculateChildAwards, mergeParentActivity } from '../src/lib/piano-state.js';
+import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay, completedDates, currentStreak, streakWithLiveGoal, recalculateChildAwards, mergeParentActivity } from '../src/lib/piano-state.js';
 
 test('family profile names survive a saved-state reload', () => {
   const values = new Map();
@@ -122,4 +122,47 @@ test('parent sync conflict preserves the local child setting changed since last 
   const merged = mergeParentActivity(latest, local, baseline);
   assert.equal(merged.state.children[0].goalMinutes, 35);
   assert.equal(merged.state.children[1].theme, 'purple');
+});
+
+test('legacy milestone settings migrate once to the recurring 10-day bonus', () => {
+  const state = initialState();
+  state.children[0].pointRules = { dailyGoal:10, lesson:20, practiceDay:1, extraMinutes:1, extraEveryMinutes:10, milestones:{3:5,5:10,7:20,14:40,30:100} };
+  assert.equal(ensureFamilyProfiles(state), true);
+  assert.equal(state.children[0].pointRules.streakEveryDays, 10);
+  assert.equal(state.children[0].pointRules.streakBonusPoints, 25);
+  assert.equal('milestones' in state.children[0].pointRules, false);
+  assert.equal(ensureFamilyProfiles(state), false);
+});
+
+test('a ten-day streak receives one bonus and an optional day cannot repeat it', () => {
+  const state = initialState();
+  const child = state.children[0];
+  child.requiredWeekdays = [1,2,3,4,5,6]; // Sundays are optional
+  for (let n=0; n<10; n++) {
+    const d = new Date('2026-10-12T12:00:00Z');
+    d.setUTCDate(d.getUTCDate()+n+(n>=6?1:0));
+    const date=d.toISOString().slice(0,10);
+    state.sessions.push({ id:`test-${n}`, childId:child.id, date, creditedMs:child.goalMinutes*60_000, status:'complete' });
+  }
+  recalculateChildAwards(state, child.id);
+  assert.equal(state.ledger.filter((row)=>row.type==='streak_milestone').length,1);
+  assert.equal(state.ledger.find((row)=>row.type==='streak_milestone').points,25);
+  const sunday='2026-10-18';
+  state.sessions.push({ id:'optional-sunday', childId:child.id, date:sunday, creditedMs:child.goalMinutes*60_000, status:'complete' });
+  recalculateChildAwards(state, child.id);
+  assert.equal(state.ledger.filter((row)=>row.type==='streak_milestone').length,1);
+});
+
+test('live goal counts the newly completed required day exactly once', () => {
+  const state = initialState();
+  const child = state.children[0];
+  for (let n=0; n<9; n++) {
+    const d=new Date('2026-10-12T12:00:00Z');
+    d.setUTCDate(d.getUTCDate()+n+(n>=6?1:0));
+    state.sessions.push({ id:`prior-${n}`, childId:child.id, date:d.toISOString().slice(0,10), creditedMs:child.goalMinutes*60_000, status:'complete' });
+  }
+  assert.equal(streakWithLiveGoal(state, child, '2026-10-22'), 10);
+  state.sessions.push({ id:'goal-day', childId:child.id, date:'2026-10-22', creditedMs:child.goalMinutes*60_000, status:'complete' });
+  assert.equal(streakWithLiveGoal(state, child, '2026-10-22'), 10);
+  assert.equal(streakWithLiveGoal(state, child, '2026-10-18'), 6); // Sunday is not required
 });

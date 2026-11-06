@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { DEFAULT_RULES, addAward, confirmLesson, evaluateDay, ledgerBalance, reconcileDayAwards, requestRedemption, resolveRedemption } from '../src/lib/rewards.js';
 
 test('daily goal and extra-minute awards are idempotent on repeated evaluation', () => {
-  const args = { childId:'son', date:'2026-10-12', creditedMinutes:40, goalMinutes:20, ledger:[], rules:DEFAULT_RULES, qualifyingRunDays:3 };
+  const args = { childId:'son', date:'2026-10-12', creditedMinutes:40, goalMinutes:20, ledger:[], rules:DEFAULT_RULES, qualifyingRunDays:10 };
   const first = evaluateDay(args);
   const second = evaluateDay({ ...args, ledger:first.ledger });
-  assert.equal(first.ledger.length, 5); // daily goal, practice day, 3-day milestone, two 10-minute extras
+  assert.equal(first.ledger.length, 5); // daily goal, practice day, 10-day streak bonus, two 10-minute extras
   assert.equal(second.ledger.length, first.ledger.length);
-  assert.equal(ledgerBalance(second.ledger,'son'),18);
+  assert.equal(ledgerBalance(second.ledger,'son'),38);
 });
 
 test('weekly lesson confirmation is unique for the child and week', () => {
@@ -69,4 +69,26 @@ test('reconciling one day leaves other days awards untouched', () => {
   assert.equal(ledger.filter((row)=>row.type==='award_reversal'&&row.sourceId==='2026-10-13').length,0);
   assert.equal(ledger.filter((row)=>row.type==='award_reversal'&&row.sourceId==='2026-10-14').length,2);
   assert.equal(ledgerBalance(ledger,'son'),11);
+});
+
+test('recurring streak bonus awards every ten qualifying days, not on other days', () => {
+  for (const days of [1, 3, 5, 7, 9, 11, 14, 19, 21, 29]) {
+    const earned = evaluateDay({ childId:'son', date:'2026-11-01', creditedMinutes:30, goalMinutes:30, ledger:[], rules:DEFAULT_RULES, qualifyingRunDays:days });
+    assert.equal(earned.ledger.some((row) => row.type === 'streak_milestone'), false, `day ${days}`);
+  }
+  for (const days of [10, 20, 30, 40]) {
+    const earned = evaluateDay({ childId:'son', date:'2026-11-01', creditedMinutes:30, goalMinutes:30, ledger:[], rules:DEFAULT_RULES, qualifyingRunDays:days });
+    assert.equal(earned.ledger.find((row) => row.type === 'streak_milestone').points, 25, `day ${days}`);
+  }
+});
+
+test('edited streak amount or interval reconciles previous bonus without rewriting the ledger', () => {
+  const args = { childId:'son', date:'2026-11-01', creditedMinutes:30, goalMinutes:30, qualifyingRunDays:10 };
+  const first = evaluateDay({ ...args, ledger:[], rules:DEFAULT_RULES });
+  const newRules = { ...DEFAULT_RULES, streakEveryDays:5, streakBonusPoints:40 };
+  const updated = evaluateDay({ ...args, ledger:first.ledger, rules:newRules });
+  const reconciled = reconcileDayAwards({ ...args, ledger:updated.ledger, rules:newRules, correctionId:'rules-changed' });
+  assert.equal(ledgerBalance(reconciled,'son'),51);
+  assert.equal(reconciled.filter((row) => row.type === 'award_reversal').length,1);
+  assert.equal(reconcileDayAwards({ ...args, ledger:reconciled, rules:newRules, correctionId:'again' }).length, reconciled.length);
 });
