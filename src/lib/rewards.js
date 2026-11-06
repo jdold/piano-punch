@@ -4,7 +4,8 @@ export const DEFAULT_RULES = Object.freeze({
   practiceDay: 1,
   extraMinutes: 1,
   extraEveryMinutes: 10,
-  milestones: { 3: 5, 5: 10, 7: 20, 14: 40, 30: 100 },
+  streakEveryDays: 10,
+  streakBonusPoints: 25,
 });
 
 export function ledgerBalance(ledger, childId) {
@@ -32,10 +33,11 @@ export function evaluateDay({ childId, date, creditedMinutes, goalMinutes, ledge
   if (completed) {
     if (rules.dailyGoal > 0) next = addAward(next, { childId, points: rules.dailyGoal, type: 'daily_goal', sourceId: date, idempotencyKey: `daily_goal:${childId}:${date}` }).ledger;
     if (rules.practiceDay > 0) next = addAward(next, { childId, points: rules.practiceDay, type: 'practice_day', sourceId: date, idempotencyKey: `practice_day:${childId}:${date}` }).ledger;
-    for (const [milestone, points] of Object.entries(rules.milestones)) {
-      if (points > 0 && qualifyingRunDays === Number(milestone)) {
-        next = addAward(next, { childId, points, type: 'streak_milestone', sourceId: date, idempotencyKey: `streak:${childId}:${date}:${milestone}` }).ledger;
-      }
+    const everyDays = Math.max(1, Math.trunc(Number(rules.streakEveryDays) || DEFAULT_RULES.streakEveryDays));
+    const bonusPoints = Math.max(0, Math.trunc(Number(rules.streakBonusPoints) || 0));
+    if (bonusPoints > 0 && qualifyingRunDays > 0 && qualifyingRunDays % everyDays === 0) {
+      // Include the rule and amount in the key so editing settings reconciles old awards.
+      next = addAward(next, { childId, points: bonusPoints, type: 'streak_milestone', sourceId: date, idempotencyKey: `streak:${childId}:${date}:${everyDays}:${bonusPoints}` }).ledger;
     }
   }
   const interval = Math.max(1, Number(rules.extraEveryMinutes) || 10);

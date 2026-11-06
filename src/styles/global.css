@@ -40,3 +40,47 @@ body[data-theme] .mini-track span{background:var(--theme-accent)}
 body[data-theme] .child-welcome{background:radial-gradient(ellipse at 50% 20%,var(--theme-glow) 0,transparent 28rem),var(--theme-page)}
 body[data-theme] .welcome-note,body[data-theme] .goal-ring-inner strong,body[data-theme] .live-ring span,body[data-theme] .practice-footer strong{color:var(--theme-accent-dark)}
 .child-identity{display:flex;align-items:center;gap:9px}.theme-toggle{width:30px;height:30px;border:1px solid var(--theme-border,#dfded4);border-radius:50%;background:var(--theme-soft,#f1f1e9);color:var(--theme-accent-dark,#52725a);font-size:17px;line-height:1}.theme-picker{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:6px;margin:-7px 0 13px}.theme-option{display:flex;align-items:center;gap:6px;border:1px solid var(--theme-border,#e6e5dc);border-radius:18px;background:var(--theme-surface,#fffdf8);color:var(--theme-ink,#45564b);padding:6px 9px;font-size:10px}.theme-option[aria-pressed="true"]{border-color:var(--theme-accent,#47765e);box-shadow:0 0 0 1px var(--theme-accent,#47765e)}.theme-option i{width:11px;height:11px;border-radius:50%;background:#47765e}.theme-option[data-profile-theme="orange"] i{background:#d56f2d}.theme-option[data-profile-theme="blue"] i{background:#4d7eb8}.theme-option[data-profile-theme="yellow"] i{background:#c49318}.theme-option[data-profile-theme="green"] i{background:#4c805f}.theme-option[data-profile-theme="purple"] i{background:#8362a8}.theme-option[data-profile-theme="pink"] i{background:#c76383}
+
+/* Keep parent controls inside the viewport, including Safari's native date inputs. */
+.shell, .parent-dashboard, .parent-grid, .admin-block, .compact-form, .session-edit-form, .timeline-row { min-width: 0; max-width: 100%; }
+.parent-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.parent-grid > *, .admin-block > *, .child-admin > *, .timeline-row > * { min-width: 0; }
+.compact-form input, .compact-form select, .session-edit-form input { max-width: 100%; box-sizing: border-box; }
+.session-entry-form > label, .session-edit-form label { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-items: stretch; }
+.session-entry-form > label > input, .session-entry-form > label > span,
+.session-entry-form > label > span > input, .session-edit-form label > input { width: 100%; min-width: 0; max-width: 100%; }
+.session-entry-form > label > span { justify-content: flex-start; }
+.session-entry-form input[type="date"], .session-entry-form input[type="datetime-local"],
+.session-edit-form input[type="datetime-local"] { display: block; width: 100%; min-width: 0; max-width: 100%; }
+.detector-admin .range-setting { min-width: 0; grid-template-columns: minmax(0, 1fr) auto; }
+.range-setting input[type="range"] { display: block; width: 100%; min-width: 0; max-width: 100%; min-height: 34px; cursor: ew-resize; }
+.streak-bonus-settings { display: grid; gap: 8px; border-top: 1px solid var(--line); padding: 12px 0 2px; }
+.streak-bonus-settings h4 { margin: 0; font-size: 12px; color: #526f57; }
+.streak-bonus-settings p { margin: 0; line-height: 1.4; }
+.streak-bonus-settings label input { width: 76px; }
+@media (max-width: 700px) {
+  .parent-grid { grid-template-columns: minmax(0, 1fr); }
+  .parent-dashboard { padding: 14px; }
+  .admin-block { padding: 12px; }
+  #goal-form > label:not(.recording-setting), #excuse-form > label,
+  #reward-form > label, .session-entry-form > label, .streak-bonus-settings > label {
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-items: stretch;
+  }
+  #goal-form > label > input, #goal-form > label > span > input,
+  #excuse-form > label > input, #reward-form > label > input,
+  .session-entry-form > label > input, .session-entry-form > label > span > input,
+  .streak-bonus-settings > label > input, .streak-bonus-settings > label > span > input {
+    width: 100%; min-width: 0; max-width: 100%;
+  }
+  #goal-form > label > span, .streak-bonus-settings > label > span { justify-content: flex-start; }
+  .compact-form input, .session-edit-form input, .detector-select select { font-size: 16px; }
+  .compact-form label, .session-edit-form label { font-size: 13px; }
+  #goal-form > .recording-setting { display: flex; justify-content: flex-start; align-items: flex-start; }
+  #goal-form > .recording-setting > input { width: auto; flex: 0 0 auto; }
+  .weekday-settings label { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+  .weekday-settings input { width: auto; }
+  .child-row { flex-wrap: wrap; }
+  .child-picker { flex-wrap: wrap; margin-left: 0; }
+  .child-admin { flex-wrap: wrap; }
+  .panel-heading h2 { overflow-wrap: anywhere; }
+}

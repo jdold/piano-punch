@@ -63,6 +63,16 @@ export function ensureFamilyProfiles(state) {
     if (!child.detector) { child.detector = structuredClone(INSTRUMENT_PRESETS[child.instrumentType].detector); changed = true; }
     if (!child.excusedDates) { child.excusedDates = []; changed = true; }
     if (!child.pointRules) { child.pointRules = structuredClone(DEFAULT_RULES); changed = true; }
+    // Replace legacy milestone tiers with the recurring parent-adjustable bonus.
+    if (!Number.isInteger(child.pointRules.streakEveryDays) || child.pointRules.streakEveryDays < 1) {
+      child.pointRules.streakEveryDays = DEFAULT_RULES.streakEveryDays;
+      changed = true;
+    }
+    if (!Number.isInteger(child.pointRules.streakBonusPoints) || child.pointRules.streakBonusPoints < 0) {
+      child.pointRules.streakBonusPoints = DEFAULT_RULES.streakBonusPoints;
+      changed = true;
+    }
+    if ('milestones' in child.pointRules) { delete child.pointRules.milestones; changed = true; }
     if (!PROFILE_THEMES[child.theme]) { child.theme = defaultProfileTheme(child.id); changed = true; }
   }
   return changed;
@@ -180,7 +190,7 @@ export function settlePracticeDay(state, childId, date = dayKey(), additionalAct
     ledger: state.ledger,
     rules: child.pointRules,
     lessonCompleted: hasLessonForDay(state, childId, date),
-    qualifyingRunDays: qualifyingRunDays ?? currentStreak(state, child, date),
+    qualifyingRunDays: requiredPracticeDate(child, date) ? (qualifyingRunDays ?? currentStreak(state, child, date)) : 0,
   });
   state.ledger = result.ledger;
   return result;
@@ -188,7 +198,7 @@ export function settlePracticeDay(state, childId, date = dayKey(), additionalAct
 
 export function reconcilePracticeDay(state, childId, date, correctionId) {
   const c = state.children.find((item) => item.id === childId);
-  state.ledger = reconcileDayAwards({ childId, date, creditedMinutes: creditedMinutesForDay(state, childId, date), goalMinutes: c.goalMinutes, ledger: state.ledger, rules: c.pointRules, lessonCompleted: hasLessonForDay(state, childId, date), qualifyingRunDays: currentStreak(state, c, date), correctionId });
+  state.ledger = reconcileDayAwards({ childId, date, creditedMinutes: creditedMinutesForDay(state, childId, date), goalMinutes: c.goalMinutes, ledger: state.ledger, rules: c.pointRules, lessonCompleted: hasLessonForDay(state, childId, date), qualifyingRunDays: requiredPracticeDate(c, date) ? currentStreak(state, c, date) : 0, correctionId });
 }
 
 export function recalculateChildAwards(state, childId) {
