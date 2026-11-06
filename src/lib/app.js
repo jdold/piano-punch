@@ -1,7 +1,7 @@
 import { SmartTimer, TIMER_STATES } from './smart-timer.js';
 import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
-import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, mergeParentActivity, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles, recoverInterruptedSession } from './piano-state.js';
+import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, mergeParentActivity, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles, recoverInterruptedSession, streakWithLiveGoal } from './piano-state.js';
 import { packCloudState, unpackCloudState, hasLegacyCloudEvents } from './cloud-state.js';
 import { ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS, LOCAL_SESSION_CHECKPOINT_INTERVAL_MS } from './cloud-sync-policy.js';
 
@@ -648,7 +648,7 @@ function checkPracticeMilestones(snapshot) {
   if (!session.goalCelebrated && previousMs < goalMs && verifiedDailyMs >= goalMs) {
     session.goalCelebrated = true;
     session.events = snapshot.events;
-    const streak = currentStreak(state, c, session.date);
+    const streak = streakWithLiveGoal(state, c, session.date);
     const before = points.ledgerBalance(state.ledger, c.id);
     settlePracticeDay(state, c.id, session.date, snapshot.activeMs, streak);
     const earned = points.ledgerBalance(state.ledger, c.id) - before;
@@ -661,7 +661,7 @@ function checkPracticeMilestones(snapshot) {
   const bonusUnits = Math.floor(Math.max(0, verifiedDailyMs - goalMs) / stepMs);
   if (bonusUnits > (session.extraUnitsSettled || 0)) {
     const before = points.ledgerBalance(state.ledger, c.id);
-    const streak = currentStreak(state, c, session.date);
+    const streak = streakWithLiveGoal(state, c, session.date);
     settlePracticeDay(state, c.id, session.date, snapshot.activeMs, streak);
     session.extraUnitsSettled = bonusUnits;
     const earned = points.ledgerBalance(state.ledger, c.id) - before;
