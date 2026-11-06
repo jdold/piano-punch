@@ -36,5 +36,5 @@ The shared state had grown to about 1.86 MB, mostly because detector event objec
 
 - Replaced the previous 3/5/7/14/30-day streak milestones with a configurable recurring reward, defaulting to 25 points at every 10 qualifying required practice days (10, 20, 30, and so on).
 - Existing child settings migrate to the new rule. Recalculating historical awards adds compensating ledger reversals rather than deleting past entries; editing the reward amount or interval uses distinct idempotency keys.
-- Fixed the live goal celebration streak count so the just-completed day is not counted twice.
+- Live goal bonuses count the active session's newly completed required day once, without double-counting an already completed day.
 - Constrained parent-dashboard grid children and native date/time inputs to viewport width; made lesson and missed-practice forms full-width and adjusted mobile controls, including detector sliders. Slider readouts update while dragging; saving happens on release.
