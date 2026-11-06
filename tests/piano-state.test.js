@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay, completedDates, currentStreak, recalculateChildAwards, mergeParentActivity } from '../src/lib/piano-state.js';
+import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay, completedDates, currentStreak, streakWithLiveGoal, recalculateChildAwards, mergeParentActivity } from '../src/lib/piano-state.js';
 
 test('family profile names survive a saved-state reload', () => {
   const values = new Map();
@@ -151,4 +151,18 @@ test('a ten-day streak receives one bonus and an optional day cannot repeat it',
   state.sessions.push({ id:'optional-sunday', childId:child.id, date:sunday, creditedMs:child.goalMinutes*60_000, status:'complete' });
   recalculateChildAwards(state, child.id);
   assert.equal(state.ledger.filter((row)=>row.type==='streak_milestone').length,1);
+});
+
+test('live goal counts the newly completed required day exactly once', () => {
+  const state = initialState();
+  const child = state.children[0];
+  for (let n=0; n<9; n++) {
+    const d=new Date('2026-10-12T12:00:00Z');
+    d.setUTCDate(d.getUTCDate()+n+(n>=6?1:0));
+    state.sessions.push({ id:`prior-${n}`, childId:child.id, date:d.toISOString().slice(0,10), creditedMs:child.goalMinutes*60_000, status:'complete' });
+  }
+  assert.equal(streakWithLiveGoal(state, child, '2026-10-22'), 10);
+  state.sessions.push({ id:'goal-day', childId:child.id, date:'2026-10-22', creditedMs:child.goalMinutes*60_000, status:'complete' });
+  assert.equal(streakWithLiveGoal(state, child, '2026-10-22'), 10);
+  assert.equal(streakWithLiveGoal(state, child, '2026-10-18'), 6); // Sunday is not required
 });
