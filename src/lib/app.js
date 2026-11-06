@@ -259,7 +259,9 @@ function render() {
   $('#point-total').textContent = Math.max(0,points.ledgerBalance(state.ledger, c.id)-reservedPoints);
   const earnedTypes=new Set(['daily_goal','practice_day','streak_milestone','extra_minutes','lesson','special_achievement','award_reinstatement','award_reversal']);
   $('#points-earned').textContent = `${state.ledger.filter((x) => x.childId === c.id && earnedTypes.has(x.type)).reduce((n,x)=>n+x.points,0)} earned`;
-  $('#badges').innerHTML=[3,5,7,14,30].filter((n)=>currentStreak(state,c)>=n).map((n)=>`<span class="badge">${n} day badge</span>`).join('');
+  const streakStep = Math.max(1, Number(c.pointRules.streakEveryDays) || 10);
+  const earnedMilestones = Math.floor(currentStreak(state, c) / streakStep);
+  $('#badges').innerHTML = Array.from({ length: earnedMilestones }, (_, i) => (i + 1) * streakStep).slice(-5).map((n) => `<span class="badge">${n} day badge</span>`).join('');
   $('#session-elapsed').textContent = fmt(current.elapsedMs);
   const livePlayingMs = state.currentSession?.childId === c.id ? current.activeMs + current.provisionalMs : 0;
   $('#session-active').textContent = fmt(livePlayingMs);
