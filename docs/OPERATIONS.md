@@ -39,3 +39,9 @@ Before applying a migration remotely, confirm the active Cloudflare account and 
 
 There are no credentials in this repository. Store secrets in Cloudflare's secret-management tools, never in source files or committed configuration. Keep Cloudflare Access enabled on the parent app and APIs before deploying from a connected account.
 
+
+## Parent corrections and streaks
+
+Saving corrected punches verifies the session as complete, including sessions recovered as interrupted. The correction event retains the prior status and times. Streaks use the corrected daily total immediately; automatic awards are reconciled across the child's history so repairing an older gap restores subsequent milestones without duplicate points. If a correction moves a session to another date, awards on the original date are also reconciled.
+
+Child sync uses the same recurring streak interval and point amount as parent corrections, preserving restored bonuses on subsequent saves.

@@ -163,3 +163,22 @@ test('family state writes return only a revision for a large stored history', as
   assert.deepEqual(JSON.parse(body), { revision: 8 });
   assert.ok(body.length < 64, 'successful state writes should not serialize the family state back to the client');
 });
+
+
+test('kid sync preserves restored recurring streak bonuses across repeated saves', async () => {
+  const state = sampleState(null);
+  state.children[0].requiredWeekdays = [1,2,3,4,5,6];
+  state.children[0].pointRules = { dailyGoal:10, practiceDay:1, streakEveryDays:5, streakBonusPoints:40 };
+  for (let n=0; n<6; n++) {
+    const date = `2026-11-${String(16+n).padStart(2,'0')}`;
+    state.sessions.push(sampleSession({ id:crypto.randomUUID(), date, status:'complete', creditedMs:20*60_000 }));
+  }
+  state.ledger.push({ id:'parent-bonus', childId:'gordon', points:40, type:'streak_milestone', sourceId:'2026-11-20', idempotencyKey:'streak:gordon:2026-11-20:5:40' });
+  const db = mockDatabase(state);
+  for (let n=0; n<2; n++) {
+    const response = await worker.fetch(familyRequest('/api/kid-data', PRIMARY_KEY, { state:db.state, revision:db.revision }), testEnv(db));
+    assert.equal(response.status, 200);
+    assert.equal(db.state.ledger.filter(row=>row.type==='streak_milestone').length, 1);
+    assert.equal(db.state.ledger.some(row=>row.reversesLedgerId==='parent-bonus'), false);
+  }
+});

@@ -219,6 +219,33 @@ export function recalculateChildAwards(state, childId) {
   }
 }
 
+// Saving a parent's corrected punches also verifies that session's credited time.
+export function correctPracticeSession(state, sessionId, { startedAt, endedAt, creditedMs, reason }) {
+  const session = state.sessions.find((item) => item.id === sessionId);
+  const startMs = Date.parse(startedAt), endMs = Date.parse(endedAt);
+  if (!session || !Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs
+    || !Number.isFinite(creditedMs) || creditedMs < 0 || creditedMs > endMs - startMs || !reason?.trim()) {
+    throw new Error('Invalid session correction.');
+  }
+  const before = { startedAt: session.startedAt, endedAt: session.endedAt, creditedMs: session.creditedMs, date: session.date, status: session.status };
+  const oldDate = session.date;
+  const deltaMs = creditedMs - session.creditedMs;
+  Object.assign(session, {
+    startedAt: new Date(startMs).toISOString(), endedAt: new Date(endMs).toISOString(),
+    elapsedMs: endMs - startMs, date: dayKey(new Date(startMs)), creditedMs,
+    status: 'complete', recoveryRequired: false,
+    correctionMs: (session.correctionMs || 0) + deltaMs, correctionReason: reason.trim(),
+  });
+  session.events ??= [];
+  session.events.push({ at: session.elapsedMs, state: 'manual_correction', reason: reason.trim(), deltaMs, before,
+    after: { startedAt: session.startedAt, endedAt: session.endedAt, creditedMs, date: session.date, status: session.status },
+    correctedAt: new Date().toISOString() });
+  // A moved date can lose awards; a repaired gap can restore later milestones.
+  settlePracticeDay(state, session.childId, oldDate);
+  reconcilePracticeDay(state, session.childId, oldDate, crypto.randomUUID());
+  recalculateChildAwards(state, session.childId);
+}
+
 function lastManualCorrectionAt(session) {
   return (session.events || []).filter((event) => event.state === 'manual_correction').reduce((latest, event) => {
     const at = Date.parse(event.correctedAt || '');

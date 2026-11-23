@@ -184,8 +184,10 @@ function addKidPracticeAwards(state) {
           if (required(key)) { if (!completed.has(key)) break; streak++; }
           cursor.setUTCDate(cursor.getUTCDate() - 1);
         }
-        for (const [milestone, value] of Object.entries(child.pointRules?.milestones || {})) {
-          if (streak === Number(milestone)) add(child, value, 'streak_milestone', date, `streak:${child.id}:${date}:${milestone}`);
+        const everyDays = Math.max(1, Math.trunc(Number(child.pointRules?.streakEveryDays) || 10));
+        const bonusPoints = Math.max(0, Math.trunc(Number(child.pointRules?.streakBonusPoints) || 0));
+        if (required(date) && streak > 0 && streak % everyDays === 0) {
+          add(child, bonusPoints, 'streak_milestone', date, `streak:${child.id}:${date}:${everyDays}:${bonusPoints}`);
         }
       }
       const interval = Math.max(1, Number(child.pointRules?.extraEveryMinutes) || 10);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay, completedDates, currentStreak, streakWithLiveGoal, recalculateChildAwards, mergeParentActivity } from '../src/lib/piano-state.js';
+import { initialState, loadState, saveState, STORAGE_KEY, ensureFamilyProfiles, ensureKidProfiles, settlePracticeDay, reconcilePracticeDay, completedDates, correctPracticeSession, currentStreak, streakWithLiveGoal, recalculateChildAwards, mergeParentActivity } from '../src/lib/piano-state.js';
 
 test('family profile names survive a saved-state reload', () => {
   const values = new Map();
@@ -165,4 +165,41 @@ test('live goal counts the newly completed required day exactly once', () => {
   state.sessions.push({ id:'goal-day', childId:child.id, date:'2026-10-22', creditedMs:child.goalMinutes*60_000, status:'complete' });
   assert.equal(streakWithLiveGoal(state, child, '2026-10-22'), 10);
   assert.equal(streakWithLiveGoal(state, child, '2026-10-18'), 6); // Sunday is not required
+});
+
+
+test('parent correction verifies interrupted time and restores the full run and later milestones', () => {
+  const state = initialState();
+  const child = state.children[0];
+  child.goalMinutes = 30;
+  child.requiredWeekdays = [0,1,2,3,4,5,6];
+  for (let n = 0; n < 41; n++) {
+    const date = new Date(2026, 9, 13 + n, 12);
+    const key = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+    state.sessions.push({ id: key, childId: child.id, date: key, creditedMs: 30*60_000, status: 'complete', events: [] });
+  }
+  const gap = state.sessions.find((session) => session.date === '2026-11-21');
+  gap.status = 'interrupted';
+  gap.creditedMs = 20*60_000;
+  gap.recoveryRequired = true;
+  state.sessions.push({ id:'morning', childId:child.id, date:gap.date, creditedMs:601396, status:'complete' });
+  assert.equal(currentStreak(state, child, '2026-11-23'), 1);
+  const correction = { startedAt: new Date(2026,10,21,10,46).toISOString(), endedAt: new Date(2026,10,21,14,18).toISOString(), creditedMs:20*60_000, reason:'Fix' };
+  correctPracticeSession(state, gap.id, correction);
+  assert.equal(gap.status, 'complete');
+  assert.equal(gap.recoveryRequired, false);
+  assert.equal(gap.events.at(-1).before.status, 'interrupted');
+  assert.equal(currentStreak(state, child, '2026-11-23'), 41);
+  assert.equal(state.ledger.filter((row)=>row.type==='streak_milestone').length, 4);
+  const balance = state.ledger.reduce((sum,row)=>sum+row.points,0);
+  correctPracticeSession(state, gap.id, correction);
+  assert.equal(state.ledger.reduce((sum,row)=>sum+row.points,0), balance);
+});
+
+test('invalid parent corrections leave interrupted practice unverified', () => {
+  const state = initialState();
+  state.sessions.push({ id:'gap', childId:'son', status:'interrupted', creditedMs:0 });
+  const before = structuredClone(state);
+  assert.throws(()=>correctPracticeSession(state,'gap',{ startedAt:'2026-11-21T12:00:00Z', endedAt:'2026-11-21T12:10:00Z', creditedMs:20*60_000, reason:'Fix' }));
+  assert.deepEqual(state, before);
 });

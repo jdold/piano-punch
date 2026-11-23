@@ -1,7 +1,7 @@
 import { SmartTimer, TIMER_STATES } from './smart-timer.js';
 import { requestMicrophone, microphoneErrorMessage } from './microphone.js';
 import { analyzePianoFrame, PianoEvidenceGate } from '../audio/classifier.js';
-import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, mergeParentActivity, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles, recoverInterruptedSession, streakWithLiveGoal } from './piano-state.js';
+import { loadState, saveState, dayKey, creditedMinutesForDay, hasLessonForDay, settlePracticeDay, reconcilePracticeDay, recalculateChildAwards, mergeParentActivity, correctPracticeSession, currentStreak, requiredPracticeDate, points, INSTRUMENT_PRESETS, PROFILE_THEMES, ensureFamilyProfiles, ensureKidProfiles, recoverInterruptedSession, streakWithLiveGoal } from './piano-state.js';
 import { packCloudState, unpackCloudState, hasLegacyCloudEvents } from './cloud-state.js';
 import { ACTIVE_SESSION_CLOUD_SYNC_INTERVAL_MS, LOCAL_SESSION_CHECKPOINT_INTERVAL_MS } from './cloud-sync-policy.js';
 
@@ -865,24 +865,13 @@ function bindEvents() {
         showToast('Check the times, active minutes, and correction reason.');
         return;
       }
-      const before={startedAt:session.startedAt,endedAt:session.endedAt,creditedMs:session.creditedMs,date:session.date};
-      const oldDate=session.date;
-      const deltaMs=creditedMs-session.creditedMs;
-      session.startedAt=new Date(startMs).toISOString();
-      session.endedAt=new Date(endMs).toISOString();
-      session.elapsedMs=endMs-startMs;
-      session.date=dayKey(new Date(startMs));
-      session.creditedMs=creditedMs;
-      session.correctionMs=(session.correctionMs||0)+deltaMs;
-      session.correctionReason=reason;
-      session.events.push({at:session.elapsedMs,state:'manual_correction',reason,deltaMs,before,after:{startedAt:session.startedAt,endedAt:session.endedAt,creditedMs, date:session.date},correctedAt:new Date().toISOString()});
-      const correctionId=crypto.randomUUID();
-      settlePracticeDay(state,session.childId,oldDate); reconcilePracticeDay(state,session.childId,oldDate,correctionId);
-      if(session.date!==oldDate){settlePracticeDay(state,session.childId,session.date);reconcilePracticeDay(state,session.childId,session.date,correctionId);}
+      correctPracticeSession(state, session.id, {
+        startedAt: new Date(startMs).toISOString(), endedAt: new Date(endMs).toISOString(), creditedMs, reason,
+      });
       persist(); showToast('Session correction saved and logged.');
     }
     const review=event.target.closest('[data-review-session]');
-    if(review){ const session=state.sessions.find((s)=>s.id===review.dataset.reviewSession); session.status='complete'; settlePracticeDay(state,session.childId,session.date); reconcilePracticeDay(state,session.childId,session.date,crypto.randomUUID()); persist(); showToast('Verified practice time approved'); }
+    if(review){ const session=state.sessions.find((s)=>s.id===review.dataset.reviewSession); session.status='complete'; session.recoveryRequired=false; recalculateChildAwards(state,session.childId); persist(); showToast('Verified practice time approved'); }
     const kidPlay=event.target.closest('[data-kid-play]');
     if(kidPlay){
       const slot=document.querySelector(`[data-kid-player="${kidPlay.dataset.kidPlay}"]`);
