@@ -237,3 +237,20 @@ test('archiving a correction retains the earlier detector history and audit time
   const denied=await worker.fetch(new Request(`https://piano-punch.test/api/session-events/${SESSION_ID}`,{headers:{'X-Piano-Family-Key':PRIMARY_KEY}}),{...testEnv(mockDatabase(second)),RECORDINGS:bucket});
   assert.equal(denied.status,401);
 });
+
+test('kid sync cannot create parent credits and recovered real time does not duplicate an existing credit', async () => {
+  const credit=sampleSession({id:crypto.randomUUID(),status:'complete',endedAt:'2026-10-25T18:30:00.000Z',elapsedMs:30*60_000,creditedMs:30*60_000,parentDayCredit:true});
+  const forbidden=sampleState(null);
+  const deniedDb=mockDatabase(forbidden);
+  const denied=await worker.fetch(familyRequest('/api/kid-data',PRIMARY_KEY,{state:{...forbidden,sessions:[credit]},revision:7}),testEnv(deniedDb));
+  assert.equal(denied.status,400);
+  const saved=sampleState(null,[credit]);
+  saved.children[0].pointRules={dailyGoal:10,practiceDay:1,extraEveryMinutes:10,extraMinutes:5};
+  saved.children[0].goalMinutes=30;
+  const db=mockDatabase(saved);
+  const actual=sampleSession({id:crypto.randomUUID(),status:'complete',endedAt:'2026-10-25T18:30:00.000Z',elapsedMs:30*60_000,creditedMs:30*60_000});
+  const accepted=await worker.fetch(familyRequest('/api/kid-data',PRIMARY_KEY,{state:{...saved,sessions:[credit,actual]},revision:7}),testEnv(db));
+  assert.equal(accepted.status,200);
+  assert.equal(db.state.ledger.some(row=>row.type==='extra_minutes'),false);
+  assert.equal(db.state.ledger.reduce((sum,row)=>sum+row.points,0),11);
+});
