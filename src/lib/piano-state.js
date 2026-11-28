@@ -140,7 +140,16 @@ export function qualifyingSessionsForDay(state, childId, date) {
 }
 
 export function creditedMinutesForDay(state, childId, date) {
-  return Math.floor(qualifyingSessionsForDay(state, childId, date).reduce((sum, s) => sum + s.creditedMs, 0) / 60_000);
+  return Math.floor(creditedPracticeMsForDay(state, childId, date) / 60_000);
+}
+
+export function creditedPracticeMsForDay(state, childId, date, additionalActiveMs = 0) {
+  const sessions = qualifyingSessionsForDay(state, childId, date);
+  const actual = sessions.filter((session) => !session.parentDayCredit).reduce((sum, session) => sum + session.creditedMs, 0);
+  // A parent-confirmed recovery day is a minimum credit, not extra practice.
+  // Real sessions recovered from another device must not double that day's time.
+  const confirmed = sessions.filter((session) => session.parentDayCredit).reduce((max, session) => Math.max(max, session.creditedMs), 0);
+  return Math.max(actual + Math.max(0, additionalActiveMs), confirmed);
 }
 
 export function hasLessonForDay(state, childId, date) {
@@ -187,8 +196,7 @@ export function streakWithLiveGoal(state, child, date = dayKey()) {
 
 export function settlePracticeDay(state, childId, date = dayKey(), additionalActiveMs = 0, qualifyingRunDays = undefined) {
   const child = state.children.find((c) => c.id === childId);
-  const recordedMs = qualifyingSessionsForDay(state, childId, date).reduce((sum, session) => sum + session.creditedMs, 0);
-  const mins = Math.floor((recordedMs + Math.max(0, additionalActiveMs)) / 60_000);
+  const mins = Math.floor(creditedPracticeMsForDay(state, childId, date, additionalActiveMs) / 60_000);
   const result = evaluateDay({
     childId,
     date,
@@ -196,7 +204,7 @@ export function settlePracticeDay(state, childId, date = dayKey(), additionalAct
     goalMinutes: child.goalMinutes,
     ledger: state.ledger,
     rules: child.pointRules,
-    lessonCompleted: hasLessonForDay(state, childId, date),
+    lessonCompleted: hasLessonForDay(state, childId, date) || qualifyingSessionsForDay(state, childId, date).some((session) => session.goalCelebrated === true),
     qualifyingRunDays: requiredPracticeDate(child, date) ? (qualifyingRunDays ?? currentStreak(state, child, date)) : 0,
   });
   state.ledger = result.ledger;
@@ -205,7 +213,7 @@ export function settlePracticeDay(state, childId, date = dayKey(), additionalAct
 
 export function reconcilePracticeDay(state, childId, date, correctionId) {
   const c = state.children.find((item) => item.id === childId);
-  state.ledger = reconcileDayAwards({ childId, date, creditedMinutes: creditedMinutesForDay(state, childId, date), goalMinutes: c.goalMinutes, ledger: state.ledger, rules: c.pointRules, lessonCompleted: hasLessonForDay(state, childId, date), qualifyingRunDays: requiredPracticeDate(c, date) ? currentStreak(state, c, date) : 0, correctionId });
+  state.ledger = reconcileDayAwards({ childId, date, creditedMinutes: creditedMinutesForDay(state, childId, date), goalMinutes: c.goalMinutes, ledger: state.ledger, rules: c.pointRules, lessonCompleted: hasLessonForDay(state, childId, date) || qualifyingSessionsForDay(state, childId, date).some((session) => session.goalCelebrated === true), qualifyingRunDays: requiredPracticeDate(c, date) ? currentStreak(state, c, date) : 0, correctionId });
 }
 
 export function recalculateChildAwards(state, childId) {
@@ -250,7 +258,7 @@ function lastManualCorrectionAt(session) {
   return (session.events || []).filter((event) => event.state === 'manual_correction').reduce((latest, event) => {
     const at = Date.parse(event.correctedAt || '');
     return Number.isFinite(at) && at > latest ? at : latest;
-  }, 0);
+  }, session.eventArchive?.lastCorrectionAt || 0);
 }
 
 export function mergeParentActivity(remote, local, baseline = null) {
@@ -262,8 +270,9 @@ export function mergeParentActivity(remote, local, baseline = null) {
     if (!existing) { sessions.set(session.id, session); changed = true; continue; }
     const localCorrection = lastManualCorrectionAt(session);
     const remoteCorrection = lastManualCorrectionAt(existing);
-    if (localCorrection > remoteCorrection || (session.status === 'complete' && existing.status === 'interrupted')
-      || (session.goalCelebrated === true && existing.goalCelebrated !== true)) {
+    if (localCorrection > remoteCorrection || (localCorrection === remoteCorrection
+      && ((session.status === 'complete' && existing.status === 'interrupted')
+        || (session.goalCelebrated === true && existing.goalCelebrated !== true)))) {
       sessions.set(session.id, session);
       changed = true;
     }

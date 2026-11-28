@@ -14,7 +14,7 @@ Private, mobile-first piano practice tracker for a family. The project is an ear
 
 The audio classifier is an experimental signal-feature heuristic. It can mistake recorded piano, other pitched instruments, or some background audio for live piano. See [Testing](docs/TESTING.md) before trusting credited time or rewards.
 
-Family settings and practice history sync through D1. Children use `/kids#<family-link-key>` to pick a profile without a login. The key is checked by the Worker; kid endpoints allow practice sync and reward requests, while parent settings and approvals remain protected. Anyone with the link can access the family practice view, so keep it private. Opt-in recordings are stored privately in R2.
+Family settings and practice summaries sync through D1; full detection timelines are archived privately in R2 and loaded on demand. Idle tabs refresh on return and hourly; successful saves adopt the shared history while preserving offline practice. Children use `/kids#<family-link-key>` to pick a profile without a login. The key is checked by the Worker; kid endpoints allow practice sync and reward requests, while parent settings and approvals remain protected. Anyone with the link can access the family practice view, so keep it private. Opt-in recordings are stored privately in R2.
 
 ## Run and verify
 

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const source = await readFile(new URL('../src/worker.js', import.meta.url), 'utf8');
-const worker = (await import(`data:text/javascript;base64,${Buffer.from(source.replace('const ASSETS = __ASSETS__;', 'const ASSETS = {};')).toString('base64')}`)).default;
+const workerModule = await import(`data:text/javascript;base64,${Buffer.from(source.replace('const ASSETS = __ASSETS__;', 'const ASSETS = {};')).toString('base64')}`);
+const worker = workerModule.default;
 
 const PRIMARY_KEY = 'primary-test-family-key';
 const SECONDARY_KEY = 'secondary-test-family-key';
@@ -181,4 +182,58 @@ test('kid sync preserves restored recurring streak bonuses across repeated saves
     assert.equal(db.state.ledger.filter(row=>row.type==='streak_milestone').length, 1);
     assert.equal(db.state.ledger.some(row=>row.reversesLedgerId==='parent-bonus'), false);
   }
+});
+
+
+function mockHistoryBucket() {
+  const objects = new Map();
+  let writes = 0;
+  return {
+    objects,
+    get writes() { return writes; },
+    async put(key, body) { writes++; objects.set(key, body); },
+    async get(key) { return objects.has(key) ? { json:async()=>JSON.parse(objects.get(key)) } : null; },
+  };
+}
+
+test('a recovery upload larger than the former 4 MB cap saves compact history and can be read on another device', async () => {
+  const sessions = Array.from({length:70},(_,n)=>sampleSession({
+    id:crypto.randomUUID(),status:'complete',endedAt:'2026-10-25T18:30:00.000Z',
+    events:Array.from({length:2000},(_,i)=>({at:i*250,state:'playing',reason:'piano_detected',confidence:0.91})),
+  }));
+  const state=sampleState(null,sessions);
+  const db=mockDatabase(state);
+  const bucket=mockHistoryBucket();
+  const env={...testEnv(db),RECORDINGS:bucket};
+  const request=familyRequest('/api/kid-data',PRIMARY_KEY,{state,revision:7});
+  const length=Buffer.byteLength(await request.clone().text());
+  assert.ok(length>4_000_000);
+  request.headers.set('Content-Length',String(length));
+  const response=await worker.fetch(request,env);
+  assert.equal(response.status,200);
+  assert.ok(JSON.stringify(db.state).length<150_000);
+  assert.equal(bucket.objects.size,70);
+  const shared=await worker.fetch(new Request('https://piano-punch.test/api/kid-data',{headers:{'X-Piano-Family-Key':PRIMARY_KEY}}),env);
+  const body=await shared.json();
+  assert.equal(body.state.sessions.length,70);
+  assert.equal(body.state.sessions[0].eventArchive.count,2000);
+  const archived=JSON.parse(bucket.objects.get(body.state.sessions[0].eventArchive.key));
+  assert.equal(archived.eventLog.rows.length,2000);
+  const again=await worker.fetch(familyRequest('/api/kid-data',PRIMARY_KEY,{state:body.state,revision:body.revision}),env);
+  assert.equal(again.status,200);
+  assert.equal(bucket.writes,70);
+});
+
+test('archiving a correction retains the earlier detector history and audit timestamp', async () => {
+  const bucket=mockHistoryBucket();
+  const state=sampleState(null,[sampleSession({status:'complete'})]);
+  const first=await workerModule.archiveStateEventLogs(state,{RECORDINGS:bucket});
+  const session=structuredClone(first.sessions[0]);
+  session.events.push({at:5000,state:'manual_correction',reason:'Parent verified',correctedAt:'2026-11-28T14:00:00Z'});
+  const second=await workerModule.archiveStateEventLogs({...state,sessions:[session]},{RECORDINGS:bucket},first);
+  assert.equal(second.sessions[0].eventArchive.count,2);
+  assert.equal(second.sessions[0].eventArchive.lastCorrectionAt,Date.parse('2026-11-28T14:00:00Z'));
+  assert.equal(JSON.parse(bucket.objects.get(second.sessions[0].eventArchive.key)).eventLog.rows.length,2);
+  const denied=await worker.fetch(new Request(`https://piano-punch.test/api/session-events/${SESSION_ID}`,{headers:{'X-Piano-Family-Key':PRIMARY_KEY}}),{...testEnv(mockDatabase(second)),RECORDINGS:bucket});
+  assert.equal(denied.status,401);
 });

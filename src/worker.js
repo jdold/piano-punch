@@ -2,7 +2,8 @@ const ASSETS = __ASSETS__;
 const ACCESS_AUD = '472b0c23f85f568f6a50e844b07bde90867e68126247c1213be06c89f73cefba';
 const ACCESS_ISSUER = 'https://jakedold07.cloudflareaccess.com';
 const PARENT_EMAILS = new Set(['jakedold07@gmail.com', 'jdold@apexdp.com']);
-const MAX_FAMILY_STATE_BYTES = 4_000_000;
+// Accept older devices' unsynced recovery copies, then archive bulky timelines.
+const MAX_FAMILY_STATE_BYTES = 16_000_000;
 const ACCESS_CERT_TTL_MS = 10 * 60_000;
 let accessCertsCache = null;
 let accessCertsExpiresAt = 0;
@@ -144,6 +145,47 @@ function packStateEventLogs(state) {
   return { ...state, sessions: state.sessions.map(packSessionEventLog) };
 }
 
+function sessionEvents(session) {
+  const log = session?.eventLog;
+  if (log?.v !== 1 || session.events?.length) return session?.events || [];
+  return log.rows.map(([at, state, reason, extra]) => ({ at,
+    ...(state >= 0 ? { state: log.states[state] } : {}),
+    ...(reason >= 0 ? { reason: log.reasons[reason] } : {}), ...extra }));
+}
+
+export async function archiveStateEventLogs(state, env, previous = null) {
+  if (!env.RECORDINGS) return packStateEventLogs(state);
+  const oldSessions = new Map((previous?.sessions || []).map((session) => [session.id, session]));
+  const sessions = [];
+  // Bound concurrency when recovering a device with weeks of unsynced history.
+  for (let start = 0; start < state.sessions.length; start += 8) {
+    sessions.push(...await Promise.all(state.sessions.slice(start, start + 8).map(async (session) => {
+      const old = oldSessions.get(session.id);
+      const archive = old?.eventArchive || session.eventArchive;
+      const incoming = sessionEvents(session);
+      if (!incoming.length) return archive ? { ...session, events: [], eventLog: undefined, eventArchive: archive } : session;
+      let events = incoming;
+      if (archive) {
+        const object = await env.RECORDINGS.get(archive.key);
+        if (!object) throw new Error('Session history archive is unavailable');
+        const saved = sessionEvents(await object.json());
+        // Old clients send the whole timeline; current clients send only new audit events.
+        const known = new Set(saved.map((event) => JSON.stringify(event)));
+        events = [...saved, ...incoming.filter((event) => !known.has(JSON.stringify(event)))];
+      }
+      const log = packSessionEventLog({ events }).eventLog;
+      const body = JSON.stringify({ eventLog: log });
+      const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body)))].map((b) => b.toString(16).padStart(2, '0')).join('');
+      const key = `history/${session.id}/${digest}.json`;
+      if (key !== archive?.key) await env.RECORDINGS.put(key, body, { httpMetadata: { contentType: 'application/json' } });
+      const lastCorrectionAt = events.filter((event) => event.state === 'manual_correction')
+        .reduce((latest, event) => Math.max(latest, Date.parse(event.correctedAt || '') || 0), 0);
+      return { ...session, events: [], eventLog: undefined, eventArchive: { key, count: events.length, lastCorrectionAt } };
+    })));
+  }
+  return { ...state, sessions };
+}
+
 function validEventLog(log) {
   return log == null || (log.v === 1
     && Array.isArray(log.states) && log.states.length <= 100
@@ -164,11 +206,16 @@ function addKidPracticeAwards(state) {
   };
   for (const child of state.children) {
     const totals = new Map();
-    for (const session of state.sessions) if (session.childId === child.id && (session.status === 'complete' || session.goalCelebrated === true)) totals.set(session.date, (totals.get(session.date) || 0) + session.creditedMs);
+    const parentCredits = new Map();
+    for (const session of state.sessions) if (session.childId === child.id && (session.status === 'complete' || session.goalCelebrated === true)) {
+      if (session.parentDayCredit) parentCredits.set(session.date, Math.max(parentCredits.get(session.date) || 0, session.creditedMs));
+      else totals.set(session.date, (totals.get(session.date) || 0) + session.creditedMs);
+    }
     const celebratedDates = new Set(state.sessions.filter((session) => session.childId === child.id && session.goalCelebrated === true).map((session) => session.date));
     const lessonDates = new Set((state.lessonSessions || []).filter((lesson) => lesson.childId === child.id).map((lesson) => lesson.date));
     for (const date of lessonDates) if (!totals.has(date)) totals.set(date, 0);
     if (state.currentSession?.childId === child.id) totals.set(state.currentSession.date, (totals.get(state.currentSession.date) || 0) + (state.currentSession.creditedMs || 0));
+    for (const [date, ms] of parentCredits) totals.set(date, Math.max(totals.get(date) || 0, ms));
     const goal = Math.max(1, Number(child.goalMinutes) || 20);
     const completed = new Set([...totals].filter(([date, ms]) => celebratedDates.has(date) || lessonDates.has(date) || Math.floor(ms / 60_000) >= goal).map(([date]) => date));
     const required = (date) => child.requiredWeekdays?.includes(new Date(`${date}T12:00:00Z`).getUTCDay()) && !child.excusedDates?.includes(date);
@@ -209,7 +256,7 @@ function addKidPracticeAwards(state) {
 }
 
 function validateKidSession(session, ids) {
-  if (!session || typeof session.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(session.id) || !ids.has(session.childId)) return false;
+  if (!session || session.parentDayCredit || typeof session.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(session.id) || !ids.has(session.childId)) return false;
   if (!['complete', 'interrupted'].includes(session.status) || !/^\d{4}-\d{2}-\d{2}$/.test(session.date)) return false;
   const start = Date.parse(session.startedAt), end = Date.parse(session.endedAt);
   return Number.isFinite(start) && Number.isFinite(end) && end >= start && end - start <= 24 * 60 * 60_000 && Number.isFinite(session.creditedMs) && session.creditedMs >= 0 && session.creditedMs <= end - start && Array.isArray(session.events) && session.events.length <= 20_000 && validEventLog(session.eventLog);
@@ -230,7 +277,7 @@ async function kidApi(request, env, url) {
   if (!env.DB) return json({ error: 'Database is not configured.' }, 503);
   if (request.method === 'PUT' && url.pathname === '/api/kid-checkpoint') {
     const length = Number(request.headers.get('content-length') || 0);
-    if (length > MAX_FAMILY_STATE_BYTES) return json({ error: 'Family data exceeds the 4 MB sync limit.' }, 413);
+    if (length > MAX_FAMILY_STATE_BYTES) return json({ error: 'Family data exceeds the recovery upload limit.' }, 413);
     let input;
     try { input = await request.json(); } catch { return json({ error: 'Invalid JSON.' }, 400); }
     const session = input?.currentSession;
@@ -262,7 +309,7 @@ async function kidApi(request, env, url) {
   }
   if (request.method === 'PUT' && url.pathname === '/api/kid-data') {
     const length = Number(request.headers.get('content-length') || 0);
-    if (length > MAX_FAMILY_STATE_BYTES) return json({ error: 'Family data exceeds the 4 MB sync limit.' }, 413);
+    if (length > MAX_FAMILY_STATE_BYTES) return json({ error: 'Family data exceeds the recovery upload limit.' }, 413);
   }
   if (request.method === 'GET' && url.pathname === '/api/kid-data') {
     const row = await env.DB.prepare("SELECT json_set(state_json, '$.parentMode', false) AS state_json, revision FROM app_state WHERE id = 1").first();
@@ -304,7 +351,7 @@ async function kidApi(request, env, url) {
         }
         continue;
       }
-      if (!validateKidSession(session, ids) || existingSessions.has(session.id) || nextSessions.some((item) => item.id === session.id)) return json({ error: 'Invalid practice session.' }, 400);
+      if (session.parentDayCredit || !validateKidSession(session, ids) || existingSessions.has(session.id) || nextSessions.some((item) => item.id === session.id)) return json({ error: 'Invalid practice session.' }, 400);
       if (session.recording && env.RECORDINGS && !await env.RECORDINGS.head(`sessions/${session.id}.audio`)) return json({ error: 'Recording is not available.' }, 400);
       nextSessions.push(session);
     }
@@ -336,7 +383,7 @@ async function kidApi(request, env, url) {
       if (balance - reserved < request.cost) return json({ error: 'Not enough available points.' }, 400);
       nextRedemptions.push(request);
     }
-    const updated = packStateEventLogs({ ...current, children: nextChildren, sessions: nextSessions, currentSession: nextCurrent, redemptions: nextRedemptions, ledger: candidateLedger, parentMode: false });
+    const updated = await archiveStateEventLogs({ ...current, children: nextChildren, sessions: nextSessions, currentSession: nextCurrent, redemptions: nextRedemptions, ledger: candidateLedger, parentMode: false }, env, current);
     const result = await env.DB.prepare(`UPDATE app_state SET state_json = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1 AND revision = ? RETURNING revision`).bind(JSON.stringify(updated), row.revision).first();
     if (!result) return json({ error: 'Family data changed. Refresh to continue.' }, 409);
     return json({ revision: result.revision });
@@ -371,6 +418,19 @@ async function api(request, env) {
     return kidApi(request, env, url);
   }
   if (!await authorized(request)) return json({ error: 'Parent sign-in required.' }, 401);
+  const historyMatch = url.pathname.match(/^\/api\/session-events\/([0-9a-f-]{36})$/i);
+  if (historyMatch && request.method === 'GET') {
+    const row = await env.DB.prepare('SELECT state_json, revision FROM app_state WHERE id = 1').first();
+    const session = row && JSON.parse(row.state_json).sessions.find((item) => item.id === historyMatch[1]);
+    if (!session) return json({ error: 'Session not found.' }, 404);
+    let events = [];
+    if (session.eventArchive) {
+      const object = await env.RECORDINGS?.get(session.eventArchive.key);
+      if (!object) return json({ error: 'Session history is unavailable.' }, 503);
+      events = sessionEvents(await object.json());
+    }
+    return json({ events: [...events, ...sessionEvents(session)] });
+  }
   const recordingMatch = url.pathname.match(/^\/api\/recordings\/([0-9a-f-]{36})$/i);
   if (recordingMatch) {
     if (!env.RECORDINGS) return json({ error: 'Recording storage is not configured.' }, 503);
@@ -403,12 +463,14 @@ async function api(request, env) {
   }
   if (request.method === 'PUT' && url.pathname === '/api/state') {
     const length = Number(request.headers.get('content-length') || 0);
-    if (length > MAX_FAMILY_STATE_BYTES) return json({ error: 'Family data exceeds the 4 MB sync limit.' }, 413);
+    if (length > MAX_FAMILY_STATE_BYTES) return json({ error: 'Family data exceeds the recovery upload limit.' }, 413);
     let input;
     try { input = await request.json(); } catch { return json({ error: 'Invalid JSON.' }, 400); }
     const s = input?.state;
     if (!s || !Array.isArray(s.children) || s.children.length < 1 || s.children.length > 8 || s.children.some((child) => !child?.id || typeof child.id !== 'string') || new Set(s.children.map((child) => child.id)).size !== s.children.length || !Array.isArray(s.sessions) || !Array.isArray(s.ledger) || !Array.isArray(s.rewards) || !Array.isArray(s.redemptions) || !Number.isInteger(input.revision) || input.revision < 0) return json({ error: 'Invalid family state.' }, 400);
-    const serialized = JSON.stringify(s);
+    const existing = await env.DB.prepare('SELECT state_json, revision FROM app_state WHERE id = 1').first();
+    if (existing && existing.revision !== input.revision) return json({ error: 'Family data changed. Refresh to continue.', revision: existing.revision }, 409);
+    const serialized = JSON.stringify(await archiveStateEventLogs(s, env, existing ? JSON.parse(existing.state_json) : null));
     const result = await env.DB.prepare(`INSERT INTO app_state (id, state_json, revision) VALUES (1, ?, 1)
       ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, revision = app_state.revision + 1, updated_at = CURRENT_TIMESTAMP
       WHERE app_state.revision = ? RETURNING revision`).bind(serialized, input.revision).first();
